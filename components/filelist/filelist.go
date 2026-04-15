@@ -19,6 +19,20 @@ type DirChangedMsg struct {
 	Path string
 }
 
+// ── File operation messages ────────────────────────────────────────────
+
+type CopyMsg struct{ Entry filesystem.FileEntry }
+type CutMsg struct{ Entry filesystem.FileEntry }
+type PasteRequestMsg struct{}
+type DeleteRequestMsg struct{ Entry filesystem.FileEntry }
+type RenameRequestMsg struct{ Entry filesystem.FileEntry }
+type CreateFileRequestMsg struct{}
+type CreateDirRequestMsg struct{}
+
+// RefreshListMsg asks the list to reload entries.
+type RefreshListMsg struct{}
+
+
 // ── Model ──────────────────────────────────────────────────────────────
 
 type historyEntry struct {
@@ -148,11 +162,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+	switch msg := msg.(type) {
+	case RefreshListMsg:
+		m.loadEntries()
+		m.fixScroll()
+		return m, nil
+	case tea.KeyMsg:
 		if m.filtering {
-			return m.updateFilter(keyMsg)
+			return m.updateFilter(msg)
 		}
-		return m.updateNavigation(keyMsg)
+		return m.updateNavigation(msg)
 	}
 
 	return m, nil
@@ -234,9 +253,28 @@ func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "s":
 		m.sortMode = filesystem.SortByName
 		m.loadEntries()
-	case "S":
-		m.sortMode = filesystem.SortBySize
-		m.loadEntries()
+	case "d":
+		if entry := m.SelectedEntry(); entry != nil {
+			return m, func() tea.Msg { return DeleteRequestMsg{Entry: *entry} }
+		}
+	case "c":
+		if entry := m.SelectedEntry(); entry != nil {
+			return m, func() tea.Msg { return CopyMsg{Entry: *entry} }
+		}
+	case "x":
+		if entry := m.SelectedEntry(); entry != nil {
+			return m, func() tea.Msg { return CutMsg{Entry: *entry} }
+		}
+	case "p":
+		return m, func() tea.Msg { return PasteRequestMsg{} }
+	case "r":
+		if entry := m.SelectedEntry(); entry != nil {
+			return m, func() tea.Msg { return RenameRequestMsg{Entry: *entry} }
+		}
+	case "n":
+		return m, func() tea.Msg { return CreateFileRequestMsg{} }
+	case "N": // Shift+N
+		return m, func() tea.Msg { return CreateDirRequestMsg{} }
 	}
 
 	return m, nil

@@ -4,16 +4,31 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tuiple/clipboard"
 	"tuiple/components/filelist"
 	"tuiple/components/preview"
 	"tuiple/components/sidebar"
 	"tuiple/filesystem"
 	"tuiple/theme"
+)
+
+// ── Dialog / State ─────────────────────────────────────────────────────
+
+type DialogMode int
+
+const (
+	DialogNone DialogMode = iota
+	DialogDelete
+	DialogRename
+	DialogNewFile
+	DialogNewDir
 )
 
 // ── Panel enum ─────────────────────────────────────────────────────────
@@ -34,6 +49,11 @@ type Model struct {
 	filelist filelist.Model
 	preview  preview.Model
 
+	textInput  textinput.Model
+	dialogMode DialogMode
+	opEntry    *filesystem.FileEntry
+	statusMsg  string
+
 	active      panel
 	currentPath string
 
@@ -46,10 +66,18 @@ type Model struct {
 
 // New creates the application model.
 func New(startDir string) Model {
+	ti := textinput.New()
+	ti.Prompt = "❯ "
+	ti.CharLimit = 255
+	ti.Width = 40
+	ti.PlaceholderStyle = theme.Dim
+	ti.TextStyle = theme.Normal
+
 	return Model{
 		sidebar:     sidebar.New(),
 		filelist:    filelist.New(startDir),
 		preview:     preview.New(),
+		textInput:   ti,
 		active:      panelFileList,
 		currentPath: startDir,
 	}
@@ -68,10 +96,14 @@ func (m Model) Init() tea.Cmd {
 // ── Update ─────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// ── Intercept Dialog keys ──────────────────────────────────────
+	if m.dialogMode != DialogNone {
+		return m.updateDialog(msg)
+	}
+
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-
 	// ── Resize ─────────────────────────────────────────────────────
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -101,6 +133,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			return m, nil
 		}
+
+	// ── File Operations ────────────────────────────────────────────
+	case filelist.CopyMsg:
+		clipboard.Set([]clipboard.Item{{Entry: msg.Entry}}, clipboard.OpCopy)
+		m.statusMsg = "Copied: " + msg.Entry.Name
+		return m, nil
+	case filelist.CutMsg:
+		clipboard.Set([]clipboard.Item{{Entry: msg.Entry}}, clipboard.OpCut)
+		m.statusMsg = "Cut: " + msg.Entry.Name
+		return m, nil
+	case filelist.PasteRequestMsg:
+		items, op := clipboard.Get()
+		if len(items) == 0 {
+			m.statusMsg = "Clipboard is empty"
+			return m, nil
+		}
+		return m.handlePaste(items, op)
+	case filelist.DeleteRequestMsg:
+		m.dialogMode = DialogDelete
+		m.opEntry = &msg.Entry
+		return m, nil
+	case filelist.RenameRequestMsg:
+		m.dialogMode = DialogRename
+		m.opEntry = &msg.Entry
+		m.textInput.SetValue(msg.Entry.Name)
+		m.textInput.Focus()
+		return m, nil
+	case filelist.CreateFileRequestMsg:
+		m.dialogMode = DialogNewFile
+		m.textInput.SetValue("")
+		m.textInput.Focus()
+		return m, nil
+	case filelist.CreateDirRequestMsg:
+		m.dialogMode = DialogNewDir
+		m.textInput.SetValue("")
+		m.textInput.Focus()
+		return m, nil
 
 	// ── Sidebar navigation ─────────────────────────────────────────
 	case sidebar.NavigateMsg:
@@ -234,6 +303,93 @@ func (m Model) contentHeight() int {
 	return max(1, m.height-4)
 }
 
+// ── File operation handlers ──────────────────────────────────────────────
+
+func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc":
+			m.dialogMode = DialogNone
+			m.textInput.Blur()
+			return m, nil
+		}
+
+		if m.dialogMode == DialogDelete {
+			if msg.String() == "y" || msg.String() == "Y" {
+				err := filesystem.Remove(m.opEntry.Path, m.opEntry.IsDir)
+				m.dialogMode = DialogNone
+				if err != nil {
+					m.statusMsg = "Error: " + err.Error()
+				} else {
+					m.statusMsg = "Deleted: " + m.opEntry.Name
+					m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
+				}
+				return m, nil
+			} else if msg.String() == "n" || msg.String() == "N" {
+				m.dialogMode = DialogNone
+				return m, nil
+			}
+			return m, nil
+		}
+
+		if msg.String() == "enter" {
+			val := m.textInput.Value()
+			if val != "" {
+				var err error
+				switch m.dialogMode {
+				case DialogRename:
+					err = filesystem.Move(m.opEntry.Path, filepath.Join(m.currentPath, val))
+				case DialogNewFile:
+					err = filesystem.CreateFile(filepath.Join(m.currentPath, val))
+				case DialogNewDir:
+					err = filesystem.CreateDir(filepath.Join(m.currentPath, val))
+				}
+				if err != nil {
+					m.statusMsg = "Error: " + err.Error()
+				} else {
+					m.statusMsg = "Done."
+					m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
+				}
+			}
+			m.dialogMode = DialogNone
+			m.textInput.Blur()
+			return m, nil
+		}
+
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) handlePaste(items []clipboard.Item, op clipboard.OpType) (tea.Model, tea.Cmd) {
+	for _, item := range items {
+		dst := filepath.Join(m.currentPath, item.Entry.Name)
+		var err error
+		if op == clipboard.OpCut {
+			err = filesystem.Move(item.Entry.Path, dst)
+		} else {
+			if item.Entry.IsDir {
+				err = filesystem.CopyDir(item.Entry.Path, dst)
+			} else {
+				err = filesystem.CopyFile(item.Entry.Path, dst)
+			}
+		}
+		if err != nil {
+			m.statusMsg = "Paste error: " + err.Error()
+			return m, nil
+		}
+	}
+	if op == clipboard.OpCut {
+		clipboard.Clear()
+	}
+	m.statusMsg = "Pasted successfully"
+	m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
+	return m, nil
+}
+
 // ── Breadcrumb ─────────────────────────────────────────────────────────
 
 func (m Model) renderBreadcrumb() string {
@@ -274,7 +430,23 @@ func (m Model) renderVSep(h int) string {
 // ── Status bar ─────────────────────────────────────────────────────────
 
 func (m Model) renderStatusBar() string {
-	left := theme.StatusPath.Render(" " + filesystem.ShortenPath(m.currentPath))
+	if m.dialogMode == DialogDelete {
+		return theme.StatusBar.Width(m.width).Render(fmt.Sprintf(" Delete %s? (y/N) ", m.opEntry.Name))
+	} else if m.dialogMode != DialogNone {
+		prefix := " Rename: "
+		if m.dialogMode == DialogNewFile {
+			prefix = " New File: "
+		} else if m.dialogMode == DialogNewDir {
+			prefix = " New Dir: "
+		}
+		return theme.StatusBar.Width(m.width).Render(prefix + m.textInput.View())
+	}
+
+	leftStr := " " + filesystem.ShortenPath(m.currentPath)
+	if m.statusMsg != "" {
+		leftStr += "  [" + m.statusMsg + "]"
+	}
+	left := theme.StatusPath.Render(leftStr)
 
 	entryCount := len(m.filelist.Entries())
 	info := fmt.Sprintf("%d items", entryCount)
