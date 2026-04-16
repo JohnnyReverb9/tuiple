@@ -28,6 +28,7 @@ type DeleteRequestMsg struct{ Entries []filesystem.FileEntry }
 type RenameRequestMsg struct{ Entry filesystem.FileEntry }
 type CreateFileRequestMsg struct{}
 type CreateDirRequestMsg struct{}
+type OpenFileRequestMsg struct{ Path string }
 
 // ClearSelectionMsg tells the list to drop its active selections.
 type ClearSelectionMsg struct{}
@@ -345,7 +346,7 @@ func (m Model) enterSelected() (Model, tea.Cmd) {
 	if entry.IsDir {
 		return m.NavigateTo(entry.Path)
 	}
-	return m, nil // non-dir files: preview only (for now)
+	return m, func() tea.Msg { return OpenFileRequestMsg{Path: entry.Path} }
 }
 
 func (m Model) goUp() (Model, tea.Cmd) {

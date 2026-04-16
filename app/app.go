@@ -186,6 +186,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	// ── Mouse Router ───────────────────────────────────────────────
 	case tea.MouseMsg:
+		if msg.Type != tea.MouseWheelUp && msg.Type != tea.MouseWheelDown {
+			// Ignore hover/motion events to prevent application freeze/flood
+			return m, nil
+		}
 		sidebarW, filelistW, _ := m.panelWidths()
 		if msg.X > sidebarW+filelistW+1 {
 			// Hover over Preview
@@ -298,6 +302,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textInput.SetValue(msg.Entry.Name)
 		m.textInput.Focus()
 		return m, nil
+	case filelist.OpenFileRequestMsg:
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "vi" // Default fallback editor
+		}
+		cmd := exec.Command(editor, msg.Path)
+		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+			return filelist.RefreshListMsg{}
+		})
 	case filelist.CreateFileRequestMsg:
 		m.dialogMode = DialogNewFile
 		m.textInput.SetValue("")
@@ -631,7 +644,7 @@ func (m Model) renderHelp() string {
 	}{
 		{"Navigation", []struct{ key, desc string }{
 			{"↑/k, ↓/j", "Move up / down"},
-			{"Enter / l", "Enter directory"},
+			{"Enter / l", "Enter dir / Open file"},
 			{"Backspace / h", "Go back to parent"},
 			{"g / G", "Go to top / bottom"},
 			{"Ctrl+U / Ctrl+D", "Page up / down"},

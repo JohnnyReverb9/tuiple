@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	maxPreviewLines = 80
 	maxFileSize     = 1 << 20 // 1 MB
 )
 
@@ -118,15 +117,10 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 			}
 		}
 
-		// Text → limited lines
+		// Text → full up to 1MB size limit
 		content := string(data)
-		lines := strings.SplitN(content, "\n", maxPreviewLines+1)
-		if len(lines) > maxPreviewLines {
-			lines = lines[:maxPreviewLines]
-			lines = append(lines, "…")
-		}
 		return ContentLoadedMsg{
-			Path: entry.Path, Content: strings.Join(lines, "\n"),
+			Path: entry.Path, Content: content,
 			Info: info,
 		}
 	}

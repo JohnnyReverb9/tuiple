@@ -49,7 +49,7 @@ go build -o tuiple .
 | --- | --- |
 | `↑` / `k` | Move cursor up |
 | `↓` / `j` | Move cursor down |
-| `Enter` / `l` | Enter directory |
+| `Enter` / `l` | Enter directory / **Open file in `$EDITOR`** |
 | `Backspace` / `h` | Go back to parent directory |
 | `g` / `G` | Jump to the very top / bottom |
 | `Ctrl+u` / `Ctrl+d` | Page up / Page down |
