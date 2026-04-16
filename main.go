@@ -10,8 +10,11 @@ import (
 )
 
 func main() {
-	startDir, err := os.Getwd()
+	startDir, err := os.UserHomeDir()
 	if err != nil {
+		startDir, _ = os.Getwd()
+	}
+	if startDir == "" {
 		startDir = "/"
 	}
 	if len(os.Args) > 1 {

@@ -45,6 +45,7 @@ type Model struct {
 	isDir        bool
 	path         string
 	scrollOffset int
+	contentLines int
 	width        int
 	height       int
 	focused      bool
@@ -138,19 +139,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case ContentLoadedMsg:
 		m.path = msg.Path
 		m.content = msg.Content
+		m.contentLines = strings.Count(msg.Content, "\n") + 1
 		m.info = msg.Info
 		m.isDir = msg.IsDir
 		m.scrollOffset = 0
 		return m, nil
 
 	case tea.MouseMsg:
+		maxScroll := max(0, m.contentLines-max(1, m.height-7))
 		if msg.Type == tea.MouseWheelUp {
 			if m.scrollOffset > 0 {
 				m.scrollOffset--
 			}
 		} else if msg.Type == tea.MouseWheelDown {
-			// Could cap at maxScroll, but View() smoothly clamps it anyway
-			m.scrollOffset++
+			if m.scrollOffset < maxScroll {
+				m.scrollOffset++
+			}
 		}
 		return m, nil
 
@@ -158,15 +162,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if !m.focused {
 			return m, nil
 		}
+		maxScroll := max(0, m.contentLines-max(1, m.height-7))
 		switch msg.String() {
 		case "up", "k":
 			if m.scrollOffset > 0 {
 				m.scrollOffset--
 			}
 		case "down", "j":
-			m.scrollOffset++
+			if m.scrollOffset < maxScroll {
+				m.scrollOffset++
+			}
 		case "g":
 			m.scrollOffset = 0
+		case "G":
+			m.scrollOffset = maxScroll
 		}
 	}
 
@@ -203,15 +212,15 @@ func (m Model) View() string {
 	// Content (scrollable)
 	if m.content != "" {
 		lines := strings.Split(m.content, "\n")
+		availH := max(1, m.height-7) // reserve space for title+info+spacer
 
-		// Clamp scroll
-		maxScroll := max(0, len(lines)-1)
+		// Clamp scroll efficiently to prevent jitter
+		maxScroll := max(0, len(lines)-availH)
 		if m.scrollOffset > maxScroll {
 			m.scrollOffset = maxScroll
 		}
 		start := m.scrollOffset
 
-		availH := max(1, m.height-7) // reserve space for title+info+spacer
 		end := min(start+availH, len(lines))
 
 		if start < len(lines) {
