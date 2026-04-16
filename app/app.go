@@ -11,9 +11,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tuiple/bookmarks"
 	"tuiple/clipboard"
 	"tuiple/components/filelist"
 	"tuiple/components/preview"
+	"tuiple/components/search"
 	"tuiple/components/sidebar"
 	"tuiple/filesystem"
 	"tuiple/theme"
@@ -54,6 +56,10 @@ type Model struct {
 	opEntry    *filesystem.FileEntry
 	statusMsg  string
 
+	searchOverlay    search.Model
+	awaitingBookmark bool
+	awaitingJump     bool
+
 	active      panel
 	currentPath string
 
@@ -74,12 +80,13 @@ func New(startDir string) Model {
 	ti.TextStyle = theme.Normal
 
 	return Model{
-		sidebar:     sidebar.New(),
-		filelist:    filelist.New(startDir),
-		preview:     preview.New(),
-		textInput:   ti,
-		active:      panelFileList,
-		currentPath: startDir,
+		sidebar:       sidebar.New(),
+		filelist:      filelist.New(startDir),
+		preview:       preview.New(),
+		textInput:     ti,
+		searchOverlay: search.New(),
+		active:        panelFileList,
+		currentPath:   startDir,
 	}
 }
 
@@ -96,9 +103,60 @@ func (m Model) Init() tea.Cmd {
 // ── Update ─────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// ── Intercept Search Overlay ───────────────────────────────────
+	if m.searchOverlay.IsActive() {
+		var cmd tea.Cmd
+		prevActive := m.searchOverlay.IsActive()
+		m.searchOverlay, cmd = m.searchOverlay.Update(msg)
+
+		if compMsg, ok := msg.(search.SearchCompletedMsg); ok {
+			dir := filepath.Dir(compMsg.SelectedPath)
+			m.currentPath = dir
+			var listCmd tea.Cmd
+			m.filelist, listCmd = m.filelist.NavigateTo(dir)
+			return m, tea.Batch(cmd, listCmd)
+		}
+
+		if !m.searchOverlay.IsActive() && prevActive {
+			return m, cmd
+		}
+		return m, cmd
+	}
+
 	// ── Intercept Dialog keys ──────────────────────────────────────
 	if m.dialogMode != DialogNone {
 		return m.updateDialog(msg)
+	}
+
+	// ── Bookmarks ──────────────────────────────────────────────────
+	if m.awaitingBookmark {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			m.awaitingBookmark = false
+			if len(keyMsg.Runes) > 0 {
+				r := keyMsg.Runes[0]
+				bookmarks.Set(r, m.currentPath)
+				m.statusMsg = fmt.Sprintf("Saved mark '%c'", r)
+			}
+			return m, nil
+		}
+	}
+	if m.awaitingJump {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			m.awaitingJump = false
+			if len(keyMsg.Runes) > 0 {
+				r := keyMsg.Runes[0]
+				if path, ok := bookmarks.Get(r); ok {
+					m.currentPath = path
+					var cmd tea.Cmd
+					m.filelist, cmd = m.filelist.NavigateTo(path)
+					m.statusMsg = fmt.Sprintf("Jumped to mark '%c'", r)
+					return m, cmd
+				} else {
+					m.statusMsg = fmt.Sprintf("Mark '%c' not set", r)
+				}
+			}
+			return m, nil
+		}
 	}
 
 	var cmds []tea.Cmd
@@ -131,6 +189,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "?":
 			m.showHelp = !m.showHelp
+			return m, nil
+		case "f":
+			return m, m.searchOverlay.Start(search.ModeNameSearch, m.currentPath)
+		case "F":
+			return m, m.searchOverlay.Start(search.ModeContentSearch, m.currentPath)
+		case "m":
+			m.awaitingBookmark = true
+			m.statusMsg = "Press character to mark..."
+			return m, nil
+		case "'":
+			m.awaitingJump = true
+			m.statusMsg = "Press character to jump..."
 			return m, nil
 		}
 
@@ -253,15 +323,24 @@ func (m Model) View() string {
 		sidebarBox, vsep, filelistBox, vsep, previewBox,
 	)
 
+	// Search Overlay
+	if m.searchOverlay.IsActive() {
+		m.searchOverlay.SetWidth(m.width / 2)
+		overlay := m.searchOverlay.View()
+		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+	}
+
 	statusBar := m.renderStatusBar()
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	ui := lipgloss.JoinVertical(lipgloss.Left,
 		breadcrumb,
 		sep,
 		content,
 		sep,
 		statusBar,
 	)
+
+	return ui
 }
 
 // ── Layout helpers ─────────────────────────────────────────────────────
