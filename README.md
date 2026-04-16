@@ -3,7 +3,7 @@
   <p>A fast, modern, and beautiful Terminal User Interface (TUI) file manager written in Go.</p>
 </div>
 
-![Tuiple UI Preview](https://via.placeholder.com/800x400.png?text=Tuiple+TUI+File+Manager)
+![Tuiple UI Preview](./assets/preview.png)
 
 ## 🌟 About Tuiple
 
