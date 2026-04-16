@@ -143,6 +143,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.scrollOffset = 0
 		return m, nil
 
+	case tea.MouseMsg:
+		if msg.Type == tea.MouseWheelUp {
+			if m.scrollOffset > 0 {
+				m.scrollOffset--
+			}
+		} else if msg.Type == tea.MouseWheelDown {
+			// Could cap at maxScroll, but View() smoothly clamps it anyway
+			m.scrollOffset++
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if !m.focused {
 			return m, nil

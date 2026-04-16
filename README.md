@@ -1,111 +1,98 @@
-# Tuiple 📁✨
+<div align="center">
+  <h1>Tuiple 📁</h1>
+  <p>A fast, modern, and beautiful Terminal User Interface (TUI) file manager written in Go.</p>
+</div>
 
-**Tuiple** is a lightning-fast, highly aesthetic Terminal User Interface (TUI) file manager written in Go. Inspired by the clean and intuitive layout of the macOS Finder, Tuiple brings a modern 3-panel file browsing experience straight into your terminal. 
+![Tuiple UI Preview](https://via.placeholder.com/800x400.png?text=Tuiple+TUI+File+Manager)
 
-Built on top of the awesome [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lip Gloss](https://github.com/charmbracelet/lipgloss) frameworks, Tuiple is designed out-of-the-box to look beautiful using standard terminal fonts (like SF Mono) without requiring patched Nerd Fonts.
+## 🌟 About Tuiple
 
-![Tokyo Night Theme](https://img.shields.io/badge/Theme-Tokyo_Night-blue?style=flat-square)
-![Go Version](https://img.shields.io/badge/Go-%3E%3D1.22-00ADD8?style=flat-square&logo=go)
+**Tuiple** is designed for power-users who want the speed of the terminal without sacrificing aesthetics and essential quality-of-life features. Built with `Bubble Tea` and styled with `Lip Gloss`, it features a clean layout, deep integration with your OS, and native integration into modern light/dark terminal color palettes.
 
----
+### ✨ Key Features
 
-## 🎨 Features
-
-*   **Three-Panel UI:** Effortlessly navigate between Locations/Favorites (Sidebar), File List, and a live File/Directory Preview.
-*   **Built-in Previews:** Instantly view text files, see directory statistics (with child items), or safely inspect binary files via Hex Dumps.
-*   **Vim-like & Native Keybindings:** Navigate your file system smoothly using arrows or standard `hjkl` bindings.
-*   **Native File Operations:** Create, rename, delete (with safety confirmation), cut, copy, and paste files and directories cleanly through an inline terminal UI.
-*   **Adaptive Filtering & Sorting:** Quickly find what you need by fuzzy filtering names or sorting by size and title.
-*   **No Nerd Font Required:** Specially curated Unicode-based icons mean Tuiple looks premium in standard terminal environments.
-
----
-
-## 🚀 Installation
-
-Ensure you have **Go 1.22+** installed on your system.
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/tuiple.git
-   cd tuiple
-   ```
-
-2. Build the binary (an `output/` directory is created for the builds):
-   ```bash
-   mkdir -p output
-   go build -o output/tuiple .
-   ```
-
-3. Move the binary to a directory in your PATH (optional):
-   ```bash
-   sudo mv output/tuiple /usr/local/bin/
-   ```
+- **Modern UI:** Unobtrusive three-panel layout (Sidebar, File List, File Preview) that intelligently conforms to your terminal.
+- **Smart Navigation:** Native `hjkl` bindings. 
+- **Lightning Fast Search Engine:** 
+  - **Fuzzy Name Search** (`f`): Rapidly find files nested up to 4 directories deep.
+  - **Content Search** (`F`): RipGrep-style full text search inside your documents.
+- **Vim-Style Bookmarks:** Save any directory to a character (`m` + `char`) and jump across the galaxy instantly (`'` + `char`). Bookmarks are persistently saved!
+- **Multi-Select & Bulk Operations:** Mark dozens of files with `<Space>` and Copy/Cut/Delete them instantly.
+- **Rich File Previews:** Look at file contents with syntax-like colors for specific extensions without opening them.
+- **Instant Shell Drops:** Press `S` to pause Tuiple, drop seamlessly into a robust bash/zsh shell to execute commands, and instantly teleport right back.
+- **Mouse Support:** Scroll through everything using native touchpad/mouse wheel bindings!
 
 ---
 
-## 📖 Usage
+## 💻 Installation
 
-Launch Tuiple in your current directory:
+Make sure you have [Go](https://golang.org/dl/) 1.21+ installed.
+
 ```bash
-./output/tuiple
+# Clone the repository
+git clone https://github.com/JohnnyReverb9/tuiple.git
+cd tuiple
+
+# Build the project
+go build -o tuiple .
+
+# Run the app
+./tuiple [optional/start/path]
 ```
 
-Or open a specific directory:
-```bash
-./output/tuiple /path/to/directory
-```
+---
 
-### ⌨️ Keyboard Shortcuts
+## ⌨️ Global Keyboard Shortcuts
 
-Press `?` at any time inside the app to bring up the quick help menu.
-
-#### **Navigation**
+**Navigation**
 | Key | Action |
-| :--- | :--- |
+| --- | --- |
 | `↑` / `k` | Move cursor up |
 | `↓` / `j` | Move cursor down |
-| `Enter` / `→` / `l` | Enter directory / Select |
-| `Backspace` / `←` / `h` | Go up one directory (Go Back) |
-| `Tab` / `Shift+Tab` | Cycle focus between Sidebar, File List, and Preview |
-| `g` / `G` | Jump to the Top / Bottom of the list |
-| `Ctrl+U` / `Ctrl+D`| Page Up / Page Down |
-| `~` | Go to Home directory |
+| `Enter` / `l` | Enter directory |
+| `Backspace` / `h` | Go back to parent directory |
+| `g` / `G` | Jump to the very top / bottom |
+| `Ctrl+u` / `Ctrl+d` | Page up / Page down |
+| `~` | Fly to Home directory |
+| `Tab` / `Shift+Tab` | Switch focus between panels |
 
-#### **File Operations**
+**File Operations**
 | Key | Action |
-| :--- | :--- |
-| `n` | Create a new file |
-| `N` (*Shift+n*) | Create a new directory |
-| `r` | Rename the selected item |
-| `d` | Delete the selected item (Prompts for `y/N` confirmation) |
-| `c` | Copy item to Tuiple's internal clipboard |
-| `x` | Cut item to Tuiple's internal clipboard |
-| `p` | Paste item from Tuiple's internal clipboard |
+| --- | --- |
+| `Space` | Toggle multi-selection on file |
+| `Esc` | Clear all selections |
+| `c` / `x` / `p` | Copy / Cut / Paste |
+| `d` | Delete the selected file(s) |
+| `r` | Rename current file |
+| `n` / `N` | Create new File / new Directory |
 
-#### **View & Filters**
+**Search & Bookmarks**
 | Key | Action |
-| :--- | :--- |
-| `/` | Start typing to filter files by name. (Press `Esc` to clear) |
-| `.` | Toggle visibility of hidden (`.dot`) files |
-| `s` | Sort list by Name |
-| `S` *(Shift+s)* | Sort list by Size |
+| --- | --- |
+| `f` | Open Fuzzy File Search (by name) |
+| `F` | Open Full-Text Search (in contents) |
+| `/` | Live list filter |
+| `m` + `<char>` | Bookmark current path to `<char>` |
+| `'` + `<char>` | Jump globally to bookmark `<char>` |
 
-#### **Global**
+**System & Sorting**
 | Key | Action |
-| :--- | :--- |
-| `?` | Toggle Help Menu overlay |
+| --- | --- |
+| `.` | Toggle hidden files display |
+| `o n` / `o s` / `o d`| Sort by: Name / Size / Date |
+| `S` | Drop to Subshell (`sh`/`bash`/`zsh`) |
+| `?` | Show comprehensive Help screen |
 | `q` / `Ctrl+c` | Quit Tuiple |
 
 ---
 
-## 🛠 Architecture
+## 🗃️ Configuration
 
-Tuiple follows the strict [Elm architecture](https://guide.elm-lang.org/architecture/) enforced by Bubble Tea. 
-*   `app`: Main root model routing messages and maintaining layout constraints.
-*   `components/`: Sub-models (`sidebar`, `filelist`, `preview`) maintaining their own logic and views.
-*   `clipboard/`: Internal copy/cut buffer implementation.
-*   `filesystem/`: File wrappers, safety abstractions, sorting, and formatters.
-*   `theme/` & `icons/`: Unified UI tokens providing the beautiful Tokyo Night color palette.
+Tuiple automatically saves persistent runtime logic into `~/.config/tuiple/`.
+- **Bookmarks:** Found in `~/.config/tuiple/bookmarks.json`.
 
 ---
-*Created as part of an advanced TUI engineering project.*
+
+<p align="center">
+  <i>Made with ❤️ by JohnnyReverb9. Built on top of Charm.sh ecosystem.</i>
+</p>

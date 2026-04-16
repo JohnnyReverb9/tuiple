@@ -184,6 +184,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	// ── Mouse Router ───────────────────────────────────────────────
+	case tea.MouseMsg:
+		sidebarW, filelistW, _ := m.panelWidths()
+		if msg.X > sidebarW+filelistW+1 {
+			// Hover over Preview
+			m.preview, _ = m.preview.Update(msg)
+		} else if msg.X > sidebarW {
+			// Hover over Filelist
+			prevCursor := m.filelist.CursorIdx()
+			m.filelist, _ = m.filelist.Update(msg)
+			if m.filelist.CursorIdx() != prevCursor {
+				m.currentPath = m.filelist.CurrentPath()
+				if entry := m.filelist.SelectedEntry(); entry != nil {
+					cmds = append(cmds, m.preview.LoadFile(*entry))
+				}
+			}
+		} else {
+			// Hover over Sidebar
+			m.sidebar, _ = m.sidebar.Update(msg)
+		}
+		return m, tea.Batch(cmds...)
+
 	// ── Resize ─────────────────────────────────────────────────────
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -603,38 +625,58 @@ func (m Model) renderStatusBar() string {
 // ── Help screen ────────────────────────────────────────────────────────
 
 func (m Model) renderHelp() string {
-	items := []struct{ key, desc string }{
-		{"↑ / k", "Move up"},
-		{"↓ / j", "Move down"},
-		{"Enter / → / l", "Enter directory"},
-		{"Backspace / ← / h", "Go back"},
-		{"~", "Go to home"},
-		{".", "Toggle hidden files"},
-		{"/", "Filter files"},
-		{"Tab / Shift+Tab", "Switch panel"},
-		{"Space", "Toggle selection"},
-		{"Esc", "Clear selections"},
-		{"g / G", "Go to top / bottom"},
-		{"Ctrl+U / Ctrl+D", "Page up / down"},
-		{"o n", "Sort by name"},
-		{"o s", "Sort by size"},
-		{"S", "Open Subshell"},
-		{"?", "Toggle this help"},
-		{"q", "Quit"},
+	categories := []struct {
+		title string
+		items []struct{ key, desc string }
+	}{
+		{"Navigation", []struct{ key, desc string }{
+			{"↑/k, ↓/j", "Move up / down"},
+			{"Enter / l", "Enter directory"},
+			{"Backspace / h", "Go back to parent"},
+			{"g / G", "Go to top / bottom"},
+			{"Ctrl+U / Ctrl+D", "Page up / down"},
+			{"~", "Go to home directory"},
+			{"Tab / Shift+Tab", "Switch active panel"},
+		}},
+		{"File Operations", []struct{ key, desc string }{
+			{"Space", "Toggle selection (Multi-select)"},
+			{"Esc", "Clear all selections"},
+			{"c / x / p", "Copy / Cut / Paste"},
+			{"d", "Delete"},
+			{"r", "Rename"},
+			{"n / N", "New File / New Directory"},
+		}},
+		{"Search & Bookmarks", []struct{ key, desc string }{
+			{"f", "Search file by name (Fuzzy)"},
+			{"F", "Search in file contents"},
+			{"/", "Live list filter"},
+			{"m + <char>", "Save bookmark to <char>"},
+			{"' + <char>", "Jump to bookmark <char>"},
+		}},
+		{"System & Options", []struct{ key, desc string }{
+			{".", "Toggle hidden files"},
+			{"o n / o s / o d", "Sort by: Name / Size / Date"},
+			{"S (Shift+s)", "Open Subshell here"},
+			{"?", "Toggle this help screen"},
+			{"q / Ctrl+C", "Quit"},
+		}},
 	}
 
 	var lines []string
 	lines = append(lines, "")
-	lines = append(lines, theme.PreviewTitle.Render("  ⌨  Keyboard Shortcuts"))
+	lines = append(lines, theme.PreviewTitle.Render("  ⌨  Tuiple — Keyboard Shortcuts"))
 	lines = append(lines, "")
 
-	for _, it := range items {
-		key := theme.HelpKey.Width(24).Render("  " + it.key)
-		desc := theme.HelpDesc.Render(it.desc)
-		lines = append(lines, key+" "+desc)
+	for _, cat := range categories {
+		lines = append(lines, theme.ListHeader.Render("  "+cat.title))
+		for _, it := range cat.items {
+			key := theme.HelpKey.Width(24).Render("    " + it.key)
+			desc := theme.HelpDesc.Render(it.desc)
+			lines = append(lines, key+" "+desc)
+		}
+		lines = append(lines, "")
 	}
 
-	lines = append(lines, "")
 	lines = append(lines, theme.Dim.Render("  Press ? to close"))
 
 	return strings.Join(lines, "\n")
