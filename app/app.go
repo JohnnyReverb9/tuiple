@@ -4,6 +4,8 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -53,12 +55,13 @@ type Model struct {
 
 	textInput  textinput.Model
 	dialogMode DialogMode
-	opEntry    *filesystem.FileEntry
+	opEntries  []filesystem.FileEntry
 	statusMsg  string
 
 	searchOverlay    search.Model
 	awaitingBookmark bool
 	awaitingJump     bool
+	awaitingSort     bool
 
 	active      panel
 	currentPath string
@@ -128,7 +131,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDialog(msg)
 	}
 
-	// ── Bookmarks ──────────────────────────────────────────────────
+	// ── Bookmarks & Sorting ───────────────────────────────────────
 	if m.awaitingBookmark {
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
 			m.awaitingBookmark = false
@@ -154,6 +157,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.statusMsg = fmt.Sprintf("Mark '%c' not set", r)
 				}
+			}
+			return m, nil
+		}
+	}
+	if m.awaitingSort {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			m.awaitingSort = false
+			switch keyMsg.String() {
+			case "n":
+				m.filelist, _ = m.filelist.Update(filelist.SortListMsg{Mode: filesystem.SortByName})
+				m.statusMsg = "Sorted by name"
+			case "s":
+				m.filelist, _ = m.filelist.Update(filelist.SortListMsg{Mode: filesystem.SortBySize})
+				m.statusMsg = "Sorted by size"
+			case "d":
+				m.filelist, _ = m.filelist.Update(filelist.SortListMsg{Mode: filesystem.SortByDate})
+				m.statusMsg = "Sorted by date"
+			default:
+				m.statusMsg = "Sort cancelled"
 			}
 			return m, nil
 		}
@@ -202,16 +224,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.awaitingJump = true
 			m.statusMsg = "Press character to jump..."
 			return m, nil
+		case "o":
+			m.awaitingSort = true
+			m.statusMsg = "Sort by: (n)ame, (s)ize, (d)ate"
+			return m, nil
+		case "S":
+			shell := os.Getenv("SHELL")
+			if shell == "" {
+				shell = "sh"
+			}
+			cmd := exec.Command(shell)
+			cmd.Dir = m.currentPath
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+				return filelist.RefreshListMsg{}
+			})
 		}
 
 	// ── File Operations ────────────────────────────────────────────
 	case filelist.CopyMsg:
-		clipboard.Set([]clipboard.Item{{Entry: msg.Entry}}, clipboard.OpCopy)
-		m.statusMsg = "Copied: " + msg.Entry.Name
+		var items []clipboard.Item
+		for _, e := range msg.Entries {
+			items = append(items, clipboard.Item{Entry: e})
+		}
+		clipboard.Set(items, clipboard.OpCopy)
+		m.statusMsg = fmt.Sprintf("Copied %d items", len(items))
+		m.filelist, _ = m.filelist.Update(filelist.ClearSelectionMsg{})
 		return m, nil
 	case filelist.CutMsg:
-		clipboard.Set([]clipboard.Item{{Entry: msg.Entry}}, clipboard.OpCut)
-		m.statusMsg = "Cut: " + msg.Entry.Name
+		var items []clipboard.Item
+		for _, e := range msg.Entries {
+			items = append(items, clipboard.Item{Entry: e})
+		}
+		clipboard.Set(items, clipboard.OpCut)
+		m.statusMsg = fmt.Sprintf("Cut %d items", len(items))
+		m.filelist, _ = m.filelist.Update(filelist.ClearSelectionMsg{})
 		return m, nil
 	case filelist.PasteRequestMsg:
 		items, op := clipboard.Get()
@@ -222,11 +268,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePaste(items, op)
 	case filelist.DeleteRequestMsg:
 		m.dialogMode = DialogDelete
-		m.opEntry = &msg.Entry
+		m.opEntries = msg.Entries
 		return m, nil
 	case filelist.RenameRequestMsg:
 		m.dialogMode = DialogRename
-		m.opEntry = &msg.Entry
+		m.opEntries = []filesystem.FileEntry{msg.Entry}
 		m.textInput.SetValue(msg.Entry.Name)
 		m.textInput.Focus()
 		return m, nil
@@ -396,13 +442,20 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.dialogMode == DialogDelete {
 			if msg.String() == "y" || msg.String() == "Y" {
-				err := filesystem.Remove(m.opEntry.Path, m.opEntry.IsDir)
+				var delErr error
+				for _, entry := range m.opEntries {
+					if err := filesystem.Remove(entry.Path, entry.IsDir); err != nil {
+						delErr = err
+						break
+					}
+				}
 				m.dialogMode = DialogNone
-				if err != nil {
-					m.statusMsg = "Error: " + err.Error()
+				if delErr != nil {
+					m.statusMsg = "Error: " + delErr.Error()
 				} else {
-					m.statusMsg = "Deleted: " + m.opEntry.Name
+					m.statusMsg = fmt.Sprintf("Deleted %d item(s)", len(m.opEntries))
 					m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
+					m.filelist, _ = m.filelist.Update(filelist.ClearSelectionMsg{})
 				}
 				return m, nil
 			} else if msg.String() == "n" || msg.String() == "N" {
@@ -418,7 +471,7 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var err error
 				switch m.dialogMode {
 				case DialogRename:
-					err = filesystem.Move(m.opEntry.Path, filepath.Join(m.currentPath, val))
+					err = filesystem.Move(m.opEntries[0].Path, filepath.Join(m.currentPath, val))
 				case DialogNewFile:
 					err = filesystem.CreateFile(filepath.Join(m.currentPath, val))
 				case DialogNewDir:
@@ -510,7 +563,11 @@ func (m Model) renderVSep(h int) string {
 
 func (m Model) renderStatusBar() string {
 	if m.dialogMode == DialogDelete {
-		return theme.StatusBar.Width(m.width).Render(fmt.Sprintf(" Delete %s? (y/N) ", m.opEntry.Name))
+		title := m.opEntries[0].Name
+		if len(m.opEntries) > 1 {
+			title = fmt.Sprintf("%d items", len(m.opEntries))
+		}
+		return theme.StatusBar.Width(m.width).Render(fmt.Sprintf(" Delete %s? (y/N) ", title))
 	} else if m.dialogMode != DialogNone {
 		prefix := " Rename: "
 		if m.dialogMode == DialogNewFile {
@@ -555,10 +612,13 @@ func (m Model) renderHelp() string {
 		{".", "Toggle hidden files"},
 		{"/", "Filter files"},
 		{"Tab / Shift+Tab", "Switch panel"},
+		{"Space", "Toggle selection"},
+		{"Esc", "Clear selections"},
 		{"g / G", "Go to top / bottom"},
 		{"Ctrl+U / Ctrl+D", "Page up / down"},
-		{"s", "Sort by name"},
-		{"S", "Sort by size"},
+		{"o n", "Sort by name"},
+		{"o s", "Sort by size"},
+		{"S", "Open Subshell"},
 		{"?", "Toggle this help"},
 		{"q", "Quit"},
 	}

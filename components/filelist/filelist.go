@@ -21,16 +21,24 @@ type DirChangedMsg struct {
 
 // ── File operation messages ────────────────────────────────────────────
 
-type CopyMsg struct{ Entry filesystem.FileEntry }
-type CutMsg struct{ Entry filesystem.FileEntry }
+type CopyMsg struct{ Entries []filesystem.FileEntry }
+type CutMsg struct{ Entries []filesystem.FileEntry }
 type PasteRequestMsg struct{}
-type DeleteRequestMsg struct{ Entry filesystem.FileEntry }
+type DeleteRequestMsg struct{ Entries []filesystem.FileEntry }
 type RenameRequestMsg struct{ Entry filesystem.FileEntry }
 type CreateFileRequestMsg struct{}
 type CreateDirRequestMsg struct{}
 
+// ClearSelectionMsg tells the list to drop its active selections.
+type ClearSelectionMsg struct{}
+
 // RefreshListMsg asks the list to reload entries.
 type RefreshListMsg struct{}
+
+// SortListMsg asks the list to reload with a specific sort mode.
+type SortListMsg struct {
+	Mode filesystem.SortMode
+}
 
 
 // ── Model ──────────────────────────────────────────────────────────────
@@ -56,8 +64,9 @@ type Model struct {
 	height  int
 	focused bool
 
-	history []historyEntry
-	err     error
+	history  []historyEntry
+	selected map[string]struct{}
+	err      error
 }
 
 // New creates a file-list rooted at the given path.
@@ -66,6 +75,7 @@ func New(path string) Model {
 		currentPath: path,
 		sortMode:    filesystem.SortByName,
 		focused:     true,
+		selected:    make(map[string]struct{}),
 	}
 	m.loadEntries()
 	return m
@@ -83,6 +93,22 @@ func (m Model) SelectedEntry() *filesystem.FileEntry {
 		return &e
 	}
 	return nil
+}
+
+func (m Model) SelectedEntries() []filesystem.FileEntry {
+	if len(m.selected) == 0 {
+		if e := m.SelectedEntry(); e != nil {
+			return []filesystem.FileEntry{*e}
+		}
+		return nil
+	}
+	var res []filesystem.FileEntry
+	for _, e := range m.entries {
+		if _, ok := m.selected[e.Path]; ok {
+			res = append(res, e)
+		}
+	}
+	return res
 }
 
 // ── Size / focus setters ───────────────────────────────────────────────
@@ -167,6 +193,24 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.loadEntries()
 		m.fixScroll()
 		return m, nil
+	case SortListMsg:
+		m.sortMode = msg.Mode
+		m.cursor = 0
+		m.offset = 0
+		m.loadEntries()
+		return m, nil
+	case ClearSelectionMsg:
+		m.selected = make(map[string]struct{})
+		return m, nil
+	case tea.MouseMsg:
+		if msg.Type == tea.MouseWheelUp && m.cursor > 0 {
+			m.cursor--
+			m.fixScroll()
+		} else if msg.Type == tea.MouseWheelDown && m.cursor < len(m.entries)-1 {
+			m.cursor++
+			m.fixScroll()
+		}
+		return m, nil
 	case tea.KeyMsg:
 		if m.filtering {
 			return m.updateFilter(msg)
@@ -250,23 +294,36 @@ func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
 		half := m.visibleHeight() / 2
 		m.cursor = max(m.cursor-half, 0)
 		m.fixScroll()
-	case "s":
-		m.sortMode = filesystem.SortByName
-		m.loadEntries()
 	case "d":
-		if entry := m.SelectedEntry(); entry != nil {
-			return m, func() tea.Msg { return DeleteRequestMsg{Entry: *entry} }
+		if entries := m.SelectedEntries(); len(entries) > 0 {
+			return m, func() tea.Msg { return DeleteRequestMsg{Entries: entries} }
 		}
 	case "c":
-		if entry := m.SelectedEntry(); entry != nil {
-			return m, func() tea.Msg { return CopyMsg{Entry: *entry} }
+		if entries := m.SelectedEntries(); len(entries) > 0 {
+			return m, func() tea.Msg { return CopyMsg{Entries: entries} }
 		}
 	case "x":
-		if entry := m.SelectedEntry(); entry != nil {
-			return m, func() tea.Msg { return CutMsg{Entry: *entry} }
+		if entries := m.SelectedEntries(); len(entries) > 0 {
+			return m, func() tea.Msg { return CutMsg{Entries: entries} }
 		}
 	case "p":
 		return m, func() tea.Msg { return PasteRequestMsg{} }
+	case " ":
+		if entry := m.SelectedEntry(); entry != nil {
+			if _, ok := m.selected[entry.Path]; ok {
+				delete(m.selected, entry.Path)
+			} else {
+				m.selected[entry.Path] = struct{}{}
+			}
+			if m.cursor < len(m.entries)-1 {
+				m.cursor++
+				m.fixScroll()
+			}
+		}
+	case "esc":
+		m.selected = make(map[string]struct{})
+		m.filtering = false
+		m.filter = ""
 	case "r":
 		if entry := m.SelectedEntry(); entry != nil {
 			return m, func() tea.Msg { return RenameRequestMsg{Entry: *entry} }
@@ -361,6 +418,7 @@ func (m Model) renderHeader() string {
 func (m Model) renderEntry(idx int) string {
 	entry := m.entries[idx]
 	isSelected := idx == m.cursor
+	_, isMarked := m.selected[entry.Path]
 	icon := icons.GetIcon(entry.Name, entry.Extension, entry.IsDir, entry.IsExec, entry.IsSymlink)
 
 	// Prepare the name
@@ -427,6 +485,13 @@ func (m Model) renderEntry(idx int) string {
 	iconStr := lipgloss.NewStyle().Foreground(icon.Color).Render(icon.Symbol)
 	nameStr := nameStyle.Width(nameW).MaxWidth(nameW).Render(name)
 	sizeRendered := theme.FileSize.Width(8).Align(lipgloss.Right).Render(sizeStr)
+	
+	// Add visual indicator for marked (selected) rows if they aren't the primary selected cursor
+	if isMarked {
+		iconStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Render("✓")
+		nameStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Width(nameW).MaxWidth(nameW).Render(name)
+	}
+
 	dateRendered := theme.FileDate.Width(12).Render(dateStr)
 
 	return fmt.Sprintf(" %s %s %s %s", iconStr, nameStr, sizeRendered, dateRendered)
