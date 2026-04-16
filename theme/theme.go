@@ -7,31 +7,31 @@ import "github.com/charmbracelet/lipgloss"
 // ── Color Palette (Tokyo Night) ────────────────────────────────────────
 
 var (
-	// Backgrounds
-	BgColor      = lipgloss.Color("#1a1b26")
-	BgDarkColor  = lipgloss.Color("#16161e")
-	BgLightColor = lipgloss.Color("#24283b")
-	BgHighlight  = lipgloss.Color("#292e42")
-	BgSelected   = lipgloss.Color("#33467c")
+	// Backgrounds (used sparingly to preserve terminal transparency where possible)
+	BgColor      = lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#1a1b26"}
+	BgDarkColor  = lipgloss.AdaptiveColor{Light: "#f1f5f9", Dark: "#16161e"} // transparent native or slight off-white
+	BgLightColor = lipgloss.AdaptiveColor{Light: "#e2e8f0", Dark: "#24283b"}
+	BgHighlight  = lipgloss.AdaptiveColor{Light: "#f8fafc", Dark: "#292e42"}
+	BgSelected   = lipgloss.AdaptiveColor{Light: "#dbeafe", Dark: "#33467c"}
 
 	// Foregrounds
-	FgColor      = lipgloss.Color("#c0caf5")
-	FgDimColor   = lipgloss.Color("#565f89")
-	FgMutedColor = lipgloss.Color("#737aa2")
+	FgColor      = lipgloss.AdaptiveColor{Light: "#0f172a", Dark: "#c0caf5"}
+	FgDimColor   = lipgloss.AdaptiveColor{Light: "#64748b", Dark: "#565f89"}
+	FgMutedColor = lipgloss.AdaptiveColor{Light: "#94a3b8", Dark: "#737aa2"}
 
-	// Accents
-	AccentBlue    = lipgloss.Color("#7aa2f7")
-	AccentCyan    = lipgloss.Color("#2ac3de")
-	AccentGreen   = lipgloss.Color("#9ece6a")
-	AccentRed     = lipgloss.Color("#f7768e")
-	AccentYellow  = lipgloss.Color("#e0af68")
-	AccentMagenta = lipgloss.Color("#bb9af7")
-	AccentOrange  = lipgloss.Color("#ff9e64")
+	// Accents (deep, vivid colors for Light mode / bright neon for Dark mode)
+	AccentBlue    = lipgloss.AdaptiveColor{Light: "#1d4ed8", Dark: "#7aa2f7"} // Strong deep blue
+	AccentCyan    = lipgloss.AdaptiveColor{Light: "#0891b2", Dark: "#2ac3de"}
+	AccentGreen   = lipgloss.AdaptiveColor{Light: "#15803d", Dark: "#9ece6a"}
+	AccentRed     = lipgloss.AdaptiveColor{Light: "#b91c1c", Dark: "#f7768e"}
+	AccentYellow  = lipgloss.AdaptiveColor{Light: "#b45309", Dark: "#e0af68"}
+	AccentMagenta = lipgloss.AdaptiveColor{Light: "#7e22ce", Dark: "#bb9af7"}
+	AccentOrange  = lipgloss.AdaptiveColor{Light: "#c2410c", Dark: "#ff9e64"}
 
 	// Separators & borders
-	SeparatorColor = lipgloss.Color("#3b3d54")
-	BorderColor    = lipgloss.Color("#3b3d54")
-	BorderActive   = lipgloss.Color("#7aa2f7")
+	SeparatorColor = lipgloss.AdaptiveColor{Light: "#cbd5e1", Dark: "#3b3d54"}
+	BorderColor    = lipgloss.AdaptiveColor{Light: "#cbd5e1", Dark: "#3b3d54"}
+	BorderActive   = lipgloss.AdaptiveColor{Light: "#1d4ed8", Dark: "#7aa2f7"}
 )
 
 // ── Generic text styles ────────────────────────────────────────────────
