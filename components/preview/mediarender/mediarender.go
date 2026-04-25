@@ -202,12 +202,12 @@ func imageToHalfBlocks(img image.Image, cols, rows int) string {
 		fitH++
 	}
 
-	// Scale the image using high-quality bilinear interpolation.
+	// Scale using CatmullRom (bicubic) for the sharpest quality.
 	// draw.Src copies source pixels directly (no alpha compositing
 	// against transparent black), which preserves colors for opaque
 	// formats like JPEG.
 	scaled := image.NewRGBA(image.Rect(0, 0, fitW, fitH))
-	draw.BiLinear.Scale(scaled, scaled.Bounds(), img, bounds, draw.Src, nil)
+	draw.CatmullRom.Scale(scaled, scaled.Bounds(), img, bounds, draw.Src, nil)
 
 	// Read all pixels into a flat array for fast indexed access.
 	// scaled.At() goes through an interface and allocates; this avoids that.
@@ -243,24 +243,24 @@ func imageToHalfBlocks(img image.Image, cols, rows int) string {
 		lb.Grow(fitW*4 + len(leftPad))
 		lb.WriteString(leftPad)
 
-		// Walk columns, batching runs of identical color pairs.
+		// Walk columns, batching runs of near-identical color pairs.
+		// Merging colors within ±2 per channel reduces escape sequences
+		// significantly without perceptible quality loss.
 		col := 0
 		for col < fitW {
 			top := pixels[row*2*fitW+col]
 			bot := pixels[(row*2+1)*fitW+col]
 
-			// Count how many consecutive columns share this exact color pair.
 			runLen := 1
 			for col+runLen < fitW {
 				nt := pixels[row*2*fitW+col+runLen]
 				nb := pixels[(row*2+1)*fitW+col+runLen]
-				if nt != top || nb != bot {
+				if !colorClose(top, nt) || !colorClose(bot, nb) {
 					break
 				}
 				runLen++
 			}
 
-			// Render the run using lipgloss (automatic color profile support).
 			fgHex := fmt.Sprintf("#%02x%02x%02x", top.r, top.g, top.b)
 			bgHex := fmt.Sprintf("#%02x%02x%02x", bot.r, bot.g, bot.b)
 
@@ -272,7 +272,15 @@ func imageToHalfBlocks(img image.Image, cols, rows int) string {
 			col += runLen
 		}
 
-		lines[row] = lb.String()
+		// Pad the line to exactly `cols` visible characters so that
+		// lipgloss.Place() has nothing to add/truncate (prevents
+		// right-edge artifacts).
+		lineStr := lb.String()
+		visW := lipgloss.Width(lineStr)
+		if visW < cols {
+			lineStr += strings.Repeat(" ", cols-visW)
+		}
+		lines[row] = lineStr
 	}
 
 	return strings.Join(lines, "\n")
@@ -310,4 +318,21 @@ func fitDimensions(srcW, srcH, maxW, maxH int) (int, int) {
 func formatMediaPlaceholder(icon, kind, name, hint string) string {
 	return fmt.Sprintf("\n  %s  %s\n\n  %s\n\n  %s",
 		icon, kind, name, hint)
+}
+
+// ── Color utilities ────────────────────────────────────────────────────
+
+// colorClose returns true if two pixels differ by ≤2 per channel.
+// This allows batching near-identical colors to reduce escape sequences.
+func colorClose(a, b pixel) bool {
+	return absDiff(a.r, b.r) <= 2 &&
+		absDiff(a.g, b.g) <= 2 &&
+		absDiff(a.b, b.b) <= 2
+}
+
+func absDiff(a, b uint8) uint8 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
