@@ -10,12 +10,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tuiple/components/preview/mediarender"
 	"tuiple/filesystem"
 	"tuiple/theme"
 )
 
 const (
-	maxFileSize     = 1 << 20 // 1 MB
+	maxFileSize      = 1 << 20 // 1 MB
+	maxMediaFileSize = 50 << 20 // 50 MB for media files
 )
 
 // ContentLoadedMsg carries preview content back to the model.
@@ -23,6 +25,7 @@ type ContentLoadedMsg struct {
 	Path    string
 	Content string
 	IsDir   bool
+	IsMedia bool // true when content is half-block rendered media
 	Info    FileInfo
 }
 
@@ -42,6 +45,7 @@ type Model struct {
 	content      string
 	info         FileInfo
 	isDir        bool
+	isMedia      bool
 	path         string
 	scrollOffset int
 	contentLines int
@@ -61,7 +65,11 @@ func (m *Model) SetFocused(f bool) { m.focused = f }
 // ── LoadFile ───────────────────────────────────────────────────────────
 
 // LoadFile returns a tea.Cmd that reads a file/dir asynchronously.
+// It passes the current panel dimensions so media can be rendered at
+// the correct size.
 func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
+	previewW := m.width
+	previewH := m.height
 	return func() tea.Msg {
 		info := FileInfo{
 			Name:    entry.Name,
@@ -89,6 +97,43 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 			return ContentLoadedMsg{
 				Path: entry.Path, Content: strings.Join(lines, "\n"),
 				IsDir: true, Info: info,
+			}
+		}
+
+		// ── Media preview (images, video, PDF) ─────────────────────
+		mediaKind := mediarender.Classify(entry.Extension)
+		if mediaKind != mediarender.KindNone {
+			// Allow larger files for media (up to 50 MB)
+			if entry.Size > maxMediaFileSize {
+				return ContentLoadedMsg{
+					Path: entry.Path, Content: "(media file too large to preview)",
+					Info: info,
+				}
+			}
+
+			// Reserve space for title + metadata + spacer
+			renderCols := max(1, previewW-2)
+			renderRows := max(1, previewH-8)
+
+			var content string
+			var renderErr error
+
+			switch mediaKind {
+			case mediarender.KindImage:
+				content, renderErr = mediarender.RenderImage(entry.Path, renderCols, renderRows)
+			case mediarender.KindVideo:
+				content, renderErr = mediarender.RenderVideoThumb(entry.Path, renderCols, renderRows)
+			case mediarender.KindPDF:
+				content, renderErr = mediarender.RenderPDFThumb(entry.Path, renderCols, renderRows)
+			}
+
+			if renderErr != nil {
+				content = fmt.Sprintf("  (preview error: %v)", renderErr)
+			}
+
+			return ContentLoadedMsg{
+				Path: entry.Path, Content: content,
+				IsMedia: true, Info: info,
 			}
 		}
 
@@ -136,6 +181,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.contentLines = strings.Count(msg.Content, "\n") + 1
 		m.info = msg.Info
 		m.isDir = msg.IsDir
+		m.isMedia = msg.IsMedia
 		m.scrollOffset = 0
 		return m, nil
 
@@ -220,13 +266,19 @@ func (m Model) View() string {
 		if start < len(lines) {
 			visible := make([]string, end-start)
 			for i := start; i < end; i++ {
-				lineNum := theme.PreviewLineNum.
-					Width(4).Align(lipgloss.Right).
-					Render(fmt.Sprintf("%d", i+1))
-				lineContent := theme.PreviewContent.
-					MaxWidth(max(1, m.width-6)).
-					Render(lines[i])
-				visible[i-start] = lineNum + " " + lineContent
+				if m.isMedia {
+					// Media content is already ANSI-colored half-blocks;
+					// render without line numbers to preserve alignment.
+					visible[i-start] = lines[i]
+				} else {
+					lineNum := theme.PreviewLineNum.
+						Width(4).Align(lipgloss.Right).
+						Render(fmt.Sprintf("%d", i+1))
+					lineContent := theme.PreviewContent.
+						MaxWidth(max(1, m.width-6)).
+						Render(lines[i])
+					visible[i-start] = lineNum + " " + lineContent
+				}
 			}
 			sections = append(sections, strings.Join(visible, "\n"))
 		}
