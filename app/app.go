@@ -701,6 +701,11 @@ func (m Model) renderHelp() string {
 			{"m + <char>", "Save bookmark to <char>"},
 			{"' + <char>", "Jump to bookmark <char>"},
 		}},
+		{"Audio Player", []struct{ key, desc string }{
+			{"l", "Play / Pause audio"},
+			{"- / =", "Seek ±5 seconds"},
+			{"_ / +", "Seek ±30 seconds"},
+		}},
 		{"System & Options", []struct{ key, desc string }{
 			{".", "Toggle hidden files"},
 			{"o n / o s / o d", "Sort by: Name / Size / Date"},

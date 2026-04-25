@@ -19,6 +19,8 @@
 - **Vim-Style Bookmarks:** Save any directory to a character (`m` + `char`) and jump across the galaxy instantly (`'` + `char`). Bookmarks are persistently saved!
 - **Multi-Select & Bulk Operations:** Mark dozens of files with `<Space>` and Copy/Cut/Delete them instantly.
 - **Rich File Previews:** Look at file contents with syntax-like colors for specific extensions without opening them.
+- **Media Previews:** Native image, video thumbnail, and PDF rendering directly in the terminal using Unicode half-blocks.
+- **Built-in Audio Player:** Play MP3, FLAC, WAV, AAC, OGG and more right from the file manager with progress bar, seeking, and metadata display.
 - **Instant Shell Drops:** Press `S` to pause Tuiple, drop seamlessly into a robust bash/zsh shell to execute commands, and instantly teleport right back.
 - **Mouse Support:** Scroll through everything using native touchpad/mouse wheel bindings!
 
@@ -75,6 +77,13 @@ go build -o tuiple .
 | `m` + `<char>` | Bookmark current path to `<char>` |
 | `'` + `<char>` | Jump globally to bookmark `<char>` |
 
+**Audio Player** *(when an audio file is selected)*
+| Key | Action |
+| --- | --- |
+| `l` | Play / Pause audio |
+| `-` / `=` | Seek backward / forward 5 seconds |
+| `_` / `+` | Seek backward / forward 30 seconds |
+
 **System & Sorting**
 | Key | Action |
 | --- | --- |
@@ -83,6 +92,18 @@ go build -o tuiple .
 | `S` | Drop to Subshell (`sh`/`bash`/`zsh`) |
 | `?` | Show comprehensive Help screen |
 | `q` / `Ctrl+c` | Quit Tuiple |
+
+---
+
+## 📦 Optional Dependencies
+
+| Tool | Used for |
+| --- | --- |
+| `ffmpeg` | Video thumbnails, audio seeking |
+| `afplay` | Audio playback (macOS built-in) |
+| `afinfo` | Audio metadata parsing (macOS built-in) |
+
+> Audio playback works out-of-the-box on macOS. Seeking requires `ffmpeg` (`brew install ffmpeg`).
 
 ---
 
