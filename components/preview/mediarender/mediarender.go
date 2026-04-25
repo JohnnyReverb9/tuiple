@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -28,6 +29,7 @@ const (
 	KindImage           // png, jpg, gif, bmp, webp, tiff
 	KindVideo           // mp4, avi, mkv, mov, webm
 	KindPDF             // pdf
+	KindAudio           // mp3, wav, flac, aac, ogg, m4a
 )
 
 var imageExts = map[string]bool{
@@ -40,6 +42,12 @@ var videoExts = map[string]bool{
 	".webm": true, ".m4v": true, ".wmv": true,
 }
 
+var audioExts = map[string]bool{
+	".mp3": true, ".wav": true, ".flac": true, ".aac": true,
+	".ogg": true, ".m4a": true, ".wma": true, ".aiff": true,
+	".alac": true, ".opus": true,
+}
+
 // Classify returns the media kind based on file extension.
 func Classify(ext string) MediaKind {
 	ext = strings.ToLower(ext)
@@ -49,10 +57,89 @@ func Classify(ext string) MediaKind {
 	if videoExts[ext] {
 		return KindVideo
 	}
+	if audioExts[ext] {
+		return KindAudio
+	}
 	if ext == ".pdf" {
 		return KindPDF
 	}
 	return KindNone
+}
+
+// ── Audio metadata ─────────────────────────────────────────────────────
+
+// AudioInfo holds parsed metadata for an audio file.
+type AudioInfo struct {
+	Duration float64 // seconds
+	BitRate  int     // bits per second
+	Sample   int     // sample rate Hz
+	Channels int
+	Codec    string  // e.g. "mp3", "aac", "flac"
+}
+
+// ParseAudioInfo runs macOS `afinfo` to extract audio metadata.
+// Returns zero-value AudioInfo if afinfo is not available.
+func ParseAudioInfo(path string) AudioInfo {
+	info := AudioInfo{}
+
+	afinfo, err := exec.LookPath("afinfo")
+	if err != nil {
+		return info
+	}
+
+	out, err := exec.Command(afinfo, path).Output()
+	if err != nil {
+		return info
+	}
+
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "estimated duration:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				info.Duration, _ = strconv.ParseFloat(parts[2], 64)
+			}
+		} else if strings.HasPrefix(line, "bit rate:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				info.BitRate, _ = strconv.Atoi(parts[2])
+			}
+		} else if strings.HasPrefix(line, "Data format:") {
+			// e.g. "Data format:     2 ch,  44100 Hz, '.mp3'"
+			rest := strings.TrimPrefix(line, "Data format:")
+			rest = strings.TrimSpace(rest)
+			fields := strings.Split(rest, ",")
+			for _, f := range fields {
+				f = strings.TrimSpace(f)
+				if strings.HasSuffix(f, "ch") {
+					fmt.Sscanf(f, "%d ch", &info.Channels)
+				} else if strings.HasSuffix(f, "Hz") {
+					fmt.Sscanf(f, "%d Hz", &info.Sample)
+				} else if strings.HasPrefix(f, "'") {
+					// codec like '.mp3'
+					info.Codec = strings.Trim(strings.Fields(f)[0], "'.")
+				}
+			}
+		}
+	}
+
+	return info
+}
+
+// FormatDuration formats seconds as M:SS or H:MM:SS.
+func FormatDuration(secs float64) string {
+	total := int(secs)
+	if total < 0 {
+		total = 0
+	}
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
 }
 
 // ── Public render functions ────────────────────────────────────────────

@@ -143,6 +143,9 @@ var (
 
 	PreviewInfo = lipgloss.NewStyle().
 			Foreground(FgMutedColor)
+
+	ErrorMsg = lipgloss.NewStyle().
+			Foreground(AccentRed)
 )
 
 // ── Help ───────────────────────────────────────────────────────────────

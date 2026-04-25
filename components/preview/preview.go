@@ -4,7 +4,10 @@ package preview
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,11 +25,23 @@ const (
 
 // ContentLoadedMsg carries preview content back to the model.
 type ContentLoadedMsg struct {
-	Path    string
-	Content string
-	IsDir   bool
-	IsMedia bool // true when content is half-block rendered media
-	Info    FileInfo
+	Path      string
+	Content   string
+	IsDir     bool
+	IsMedia   bool // true when content is half-block rendered media
+	IsAudio   bool // true when file is an audio file
+	AudioMeta mediarender.AudioInfo
+	Info      FileInfo
+}
+
+// AudioTickMsg fires every second while audio is playing to update elapsed time.
+type AudioTickMsg time.Time
+
+// AudioSeekFinishedMsg is sent when the async ffmpeg seek completes.
+type AudioSeekFinishedMsg struct {
+	PlayPath string
+	Position float64
+	Err      error
 }
 
 // FileInfo holds metadata displayed at the top of the preview.
@@ -46,12 +61,25 @@ type Model struct {
 	info         FileInfo
 	isDir        bool
 	isMedia      bool
+	isAudio      bool
 	path         string
 	scrollOffset int
 	contentLines int
 	width        int
 	height       int
 	focused      bool
+
+	// Audio player state
+	audioMeta    mediarender.AudioInfo
+	audioCmd     *exec.Cmd // running afplay process
+	audioPlaying bool
+	audioStart   time.Time  // when playback started
+	audioElapsed    float64    // current position in seconds
+	audioOffset     float64    // position where current playback started
+	audioTmpFile    string     // temp file for seeked playback
+	audioWarning    string     // warning message (e.g., missing ffmpeg)
+	audioSeeking    bool       // true while ffmpeg is processing a seek
+	audioSeekTarget float64    // the target position for the current seek
 }
 
 // New creates an empty preview model.
@@ -100,9 +128,18 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 			}
 		}
 
-		// ── Media preview (images, video, PDF) ─────────────────────
+		// ── Media preview (images, video, PDF, audio) ───────────────
 		mediaKind := mediarender.Classify(entry.Extension)
 		if mediaKind != mediarender.KindNone {
+			// Audio files: parse metadata, show player UI
+			if mediaKind == mediarender.KindAudio {
+				meta := mediarender.ParseAudioInfo(entry.Path)
+				return ContentLoadedMsg{
+					Path: entry.Path, IsAudio: true,
+					AudioMeta: meta, Info: info,
+				}
+			}
+
 			// Allow larger files for media (up to 50 MB)
 			if entry.Size > maxMediaFileSize {
 				return ContentLoadedMsg{
@@ -176,14 +213,63 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ContentLoadedMsg:
+		// Stop any playing audio and reset position when switching files
+		m.resetAudio()
+		m.audioWarning = ""
+
 		m.path = msg.Path
 		m.content = msg.Content
 		m.contentLines = strings.Count(msg.Content, "\n") + 1
 		m.info = msg.Info
 		m.isDir = msg.IsDir
 		m.isMedia = msg.IsMedia
+		m.isAudio = msg.IsAudio
+		m.audioMeta = msg.AudioMeta
 		m.scrollOffset = 0
 		return m, nil
+
+	case AudioSeekFinishedMsg:
+		if m.audioSeekTarget != msg.Position {
+			// This is a stale seek result; ignore it because a newer seek was requested
+			if msg.Err == nil && msg.PlayPath != m.path {
+				os.Remove(msg.PlayPath)
+			}
+			return m, nil
+		}
+		
+		m.audioSeeking = false
+		if msg.Err != nil {
+			m.audioWarning = "ffmpeg failed to seek"
+			return m, m.playFile(m.path, 0)
+		}
+
+		if m.audioTmpFile != "" && m.audioTmpFile != msg.PlayPath {
+			os.Remove(m.audioTmpFile)
+		}
+		m.audioTmpFile = msg.PlayPath
+		return m, m.playFile(msg.PlayPath, msg.Position)
+
+	case AudioTickMsg:
+		if !m.audioPlaying {
+			return m, nil
+		}
+		// Check if process is still running
+		if m.audioCmd != nil && m.audioCmd.ProcessState != nil {
+			// Process finished
+			m.audioPlaying = false
+			m.audioCmd = nil
+			m.audioElapsed = 0
+			return m, nil
+		}
+		m.audioElapsed = m.audioOffset + time.Since(m.audioStart).Seconds()
+		// Cap at duration if known
+		if m.audioMeta.Duration > 0 && m.audioElapsed > m.audioMeta.Duration {
+			m.stopAudio()
+			m.audioOffset = 0
+			m.audioElapsed = 0
+			return m, nil
+		}
+		return m, m.audioTickCmd()
 
 	case tea.MouseMsg:
 		maxScroll := max(0, m.contentLines-max(1, m.height-7))
@@ -202,6 +288,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if !m.focused {
 			return m, nil
 		}
+
+		// Audio controls (play/stop + seek)
+		if m.isAudio {
+			switch msg.String() {
+			case "l":
+				m.audioWarning = ""
+				if m.audioPlaying {
+					m.stopAudio()
+				} else {
+					return m, m.startAudio()
+				}
+				return m, nil
+			}
+		}
+
 		maxScroll := max(0, m.contentLines-max(1, m.height-7))
 		switch msg.String() {
 		case "up", "k":
@@ -220,6 +321,143 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// ── Audio API ──────────────────────────────────────────────────────────
+
+func (m Model) IsAudio() bool {
+	return m.isAudio
+}
+
+func (m Model) Path() string {
+	return m.path
+}
+
+func (m *Model) ToggleAudio() tea.Cmd {
+	if m.audioPlaying {
+		m.stopAudio()
+		return nil
+	}
+	return m.startAudio()
+}
+
+func (m *Model) SeekAudio(delta float64) tea.Cmd {
+	return m.seekAudio(delta)
+}
+
+// ── Audio playback ─────────────────────────────────────────────────────
+
+func (m *Model) startAudio() tea.Cmd {
+	return m.startAudioAt(m.audioOffset)
+}
+
+func (m *Model) startAudioAt(position float64) tea.Cmd {
+	m.audioWarning = ""
+
+	// If playing from start, just play immediately
+	if position <= 0.5 {
+		return m.playFile(m.path, position)
+	}
+
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		m.audioWarning = "Seeking requires 'ffmpeg' (brew install ffmpeg)"
+		return m.playFile(m.path, 0)
+	}
+
+	m.audioSeeking = true
+	m.audioSeekTarget = position
+
+	return func() tea.Msg {
+		ext := filepath.Ext(m.path)
+		tmpFile := filepath.Join(os.TempDir(), "tuiple-seek"+ext)
+		seekCmd := exec.Command(ffmpeg,
+			"-y",
+			"-ss", fmt.Sprintf("%.2f", position),
+			"-i", m.path,
+			"-c", "copy",
+			tmpFile,
+		)
+		seekCmd.Stdout = nil
+		seekCmd.Stderr = nil
+		err := seekCmd.Run()
+		return AudioSeekFinishedMsg{
+			PlayPath: tmpFile,
+			Position: position,
+			Err:      err,
+		}
+	}
+}
+
+func (m *Model) playFile(playPath string, position float64) tea.Cmd {
+	cmd := exec.Command("afplay", playPath)
+	if err := cmd.Start(); err != nil {
+		return nil
+	}
+	m.audioCmd = cmd
+	m.audioPlaying = true
+	m.audioStart = time.Now()
+	m.audioOffset = position
+	m.audioElapsed = position
+
+	go func() {
+		cmd.Wait()
+	}()
+
+	return m.audioTickCmd()
+}
+
+func (m *Model) seekAudio(delta float64) tea.Cmd {
+	newPos := m.audioElapsed + delta
+	if newPos < 0 {
+		newPos = 0
+	}
+	if m.audioMeta.Duration > 0 && newPos >= m.audioMeta.Duration {
+		newPos = m.audioMeta.Duration - 0.5
+		if newPos < 0 {
+			newPos = 0
+		}
+	}
+
+	if m.audioPlaying {
+		m.stopAudio()
+		m.audioOffset = newPos
+		m.audioElapsed = newPos
+		return m.startAudioAt(newPos)
+	}
+
+	// When paused, just update position
+	m.audioOffset = newPos
+	m.audioElapsed = newPos
+	return nil
+}
+
+func (m *Model) stopAudio() {
+	if m.audioCmd != nil && m.audioCmd.Process != nil {
+		m.audioCmd.Process.Kill()
+	}
+	m.audioCmd = nil
+	m.audioPlaying = false
+	m.audioSeeking = false
+	// Preserve position for resume
+	m.audioOffset = m.audioElapsed
+}
+
+func (m *Model) resetAudio() {
+	m.stopAudio()
+	m.audioElapsed = 0
+	m.audioOffset = 0
+	m.audioSeeking = false
+	if m.audioTmpFile != "" {
+		os.Remove(m.audioTmpFile)
+		m.audioTmpFile = ""
+	}
+}
+
+func (m Model) audioTickCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return AudioTickMsg(t)
+	})
 }
 
 // ── View ───────────────────────────────────────────────────────────────
@@ -248,6 +486,12 @@ func (m Model) View() string {
 	}
 	sections = append(sections, strings.Join(infoLines, "\n"))
 	sections = append(sections, "") // spacer
+
+	// ── Audio player UI ────────────────────────────────────────────
+	if m.isAudio {
+		sections = append(sections, m.renderAudioPlayer()...)
+		return strings.Join(sections, "\n")
+	}
 
 	// Content (scrollable)
 	if m.content != "" {
@@ -285,6 +529,96 @@ func (m Model) View() string {
 	}
 
 	return strings.Join(sections, "\n")
+}
+
+// renderAudioPlayer builds the audio player UI lines.
+func (m Model) renderAudioPlayer() []string {
+	var lines []string
+	meta := m.audioMeta
+
+	// ── Audio icon ────────────────────────────────────────────────
+	lines = append(lines, theme.PreviewInfo.Render("  🎵  Audio File"))
+	lines = append(lines, "")
+
+	// ── Metadata ──────────────────────────────────────────────────
+	if meta.Codec != "" {
+		codec := strings.ToUpper(meta.Codec)
+		lines = append(lines, theme.PreviewInfo.Render(
+			fmt.Sprintf("  Codec:   %s", codec)))
+	}
+	if meta.Duration > 0 {
+		lines = append(lines, theme.PreviewInfo.Render(
+			fmt.Sprintf("  Length:  %s", mediarender.FormatDuration(meta.Duration))))
+	}
+	if meta.BitRate > 0 {
+		kbps := meta.BitRate / 1000
+		lines = append(lines, theme.PreviewInfo.Render(
+			fmt.Sprintf("  Rate:    %d kbps", kbps)))
+	}
+	if meta.Sample > 0 {
+		sampleKHz := float64(meta.Sample) / 1000.0
+		lines = append(lines, theme.PreviewInfo.Render(
+			fmt.Sprintf("  Sample:  %.1f kHz", sampleKHz)))
+	}
+	if meta.Channels > 0 {
+		ch := "Mono"
+		if meta.Channels >= 2 {
+			ch = "Stereo"
+		}
+		lines = append(lines, theme.PreviewInfo.Render(
+			fmt.Sprintf("  Audio:   %s", ch)))
+	}
+
+	lines = append(lines, "")
+
+	// ── Progress bar ──────────────────────────────────────────────
+	barWidth := max(10, m.width-8)
+	elapsed := m.audioElapsed
+	total := meta.Duration
+
+	elapsedStr := mediarender.FormatDuration(elapsed)
+	totalStr := "--:--"
+	if total > 0 {
+		totalStr = mediarender.FormatDuration(total)
+	}
+
+	// Build the progress bar
+	progress := 0.0
+	if total > 0 {
+		progress = elapsed / total
+		if progress > 1 {
+			progress = 1
+		}
+	}
+	filled := int(float64(barWidth) * progress)
+	empty := barWidth - filled
+
+	bar := "  " + strings.Repeat("▓", filled) + strings.Repeat("░", empty)
+	lines = append(lines, theme.PreviewInfo.Render(bar))
+	lines = append(lines, theme.PreviewInfo.Render(
+		fmt.Sprintf("  %s / %s", elapsedStr, totalStr)))
+
+	lines = append(lines, "")
+
+	// ── Controls ──────────────────────────────────────────────────
+	if m.audioSeeking {
+		lines = append(lines, theme.PreviewTitle.Render("  ~  Seeking..."))
+		lines = append(lines, theme.Dim.Render("  l  stop"))
+	} else if m.audioPlaying {
+		lines = append(lines, theme.PreviewTitle.Render("  ■  Playing..."))
+		lines = append(lines, theme.Dim.Render("  l  stop"))
+	} else {
+		lines = append(lines, theme.PreviewTitle.Render("  ▶  Paused"))
+		lines = append(lines, theme.Dim.Render("  l  play"))
+	}
+	lines = append(lines, theme.Dim.Render("  -/=  ±5s   _/+  ±30s"))
+
+	if m.audioWarning != "" {
+		lines = append(lines, "")
+		lines = append(lines, theme.ErrorMsg.Render("  ⚠ "+m.audioWarning))
+	}
+
+	return lines
 }
 
 // ── Hex dump helper ────────────────────────────────────────────────────

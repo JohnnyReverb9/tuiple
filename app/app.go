@@ -227,6 +227,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "-", "−": // Catch both ASCII minus and Unicode minus just in case
+			if m.preview.IsAudio() {
+				return m, m.preview.SeekAudio(-5)
+			}
+		case "=", "+":
+			if m.preview.IsAudio() {
+				// if shifted, it's + which usually means plus, but we'll use + for +30 and = for +5
+				if msg.String() == "+" {
+					return m, m.preview.SeekAudio(30)
+				}
+				return m, m.preview.SeekAudio(5)
+			}
+		case "_":
+			if m.preview.IsAudio() {
+				return m, m.preview.SeekAudio(-30)
+			}
 		case "tab":
 			m.cyclePanel(1)
 			m.updateFocus()
@@ -303,6 +319,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textInput.Focus()
 		return m, nil
 	case filelist.OpenFileRequestMsg:
+		// If it's an audio file and it's currently loaded in preview,
+		// toggle playback instead of opening in an editor.
+		if m.preview.IsAudio() && m.preview.Path() == msg.Path {
+			cmd := m.preview.ToggleAudio()
+			return m, cmd
+		}
+
 		editor := os.Getenv("EDITOR")
 		if editor == "" {
 			editor = "vi" // Default fallback editor
@@ -343,8 +366,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Preview content loaded ─────────────────────────────────────
 	case preview.ContentLoadedMsg:
-		m.preview, _ = m.preview.Update(msg)
-		return m, nil
+		var cmd tea.Cmd
+		m.preview, cmd = m.preview.Update(msg)
+		return m, cmd
+
+	// ── Audio tick / seek routed regardless of active panel ────────
+	case preview.AudioTickMsg:
+		var cmd tea.Cmd
+		m.preview, cmd = m.preview.Update(msg)
+		return m, cmd
+
+	case preview.AudioSeekFinishedMsg:
+		var cmd tea.Cmd
+		m.preview, cmd = m.preview.Update(msg)
+		return m, cmd
 	}
 
 	// ── Route to active panel ──────────────────────────────────────
