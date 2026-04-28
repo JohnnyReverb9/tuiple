@@ -18,6 +18,7 @@ import (
 	"tuiple/clipboard"
 	"tuiple/components/filelist"
 	"tuiple/components/preview"
+	"tuiple/components/preview/mediarender"
 	"tuiple/components/search"
 	"tuiple/components/sidebar"
 	"tuiple/filesystem"
@@ -375,7 +376,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		ext := strings.ToLower(filepath.Ext(msg.Path))
-		
+		kind := mediarender.Classify(ext)
+
+		// Open images and videos in terminal using 'chafa'
+		if kind == mediarender.KindImage || kind == mediarender.KindVideo {
+			if _, err := exec.LookPath("chafa"); err == nil {
+				// Use chafa to render and wait for a keypress
+				shCmd := fmt.Sprintf("chafa %q; echo; echo 'Press Enter to return...'; read", msg.Path)
+				cmd := exec.Command("sh", "-c", shCmd)
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+					return filelist.RefreshListMsg{}
+				})
+			}
+		}
+
 		// Attempt to open e-books and documents using Bookokrat
 		if ext == ".pdf" || ext == ".epub" || ext == ".djvu" {
 			if _, err := exec.LookPath("bookokrat"); err == nil {
