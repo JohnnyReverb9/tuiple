@@ -1,0 +1,196 @@
+package app
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"tuiple/filesystem"
+)
+
+type OpType string
+
+const (
+	OpRename     OpType = "rename"
+	OpCreateFile OpType = "create_file"
+	OpCreateDir  OpType = "create_dir"
+	OpCopy       OpType = "copy"
+	OpMove       OpType = "move"
+	OpDelete     OpType = "delete"
+)
+
+type HistoryItem struct {
+	Src   string
+	Dst   string
+	IsDir bool
+}
+
+type HistoryEvent struct {
+	Op    OpType
+	Items []HistoryItem
+}
+
+var (
+	undoStack []HistoryEvent
+	redoStack []HistoryEvent
+
+	pendingDeletesMu sync.Mutex
+	pendingDeletes   = make(map[string]*time.Timer)
+)
+
+func SoftDeletePath(src string) (string, error) {
+	dir := filepath.Dir(src)
+	base := filepath.Base(src)
+	trashName := fmt.Sprintf(".%s.tuiple_trash_%d", base, time.Now().UnixNano())
+	trashPath := filepath.Join(dir, trashName)
+
+	err := filesystem.Move(src, trashPath)
+	if err != nil {
+		return "", err
+	}
+
+	pendingDeletesMu.Lock()
+	timer := time.AfterFunc(20*time.Second, func() {
+		os.RemoveAll(trashPath)
+		pendingDeletesMu.Lock()
+		delete(pendingDeletes, trashPath)
+		pendingDeletesMu.Unlock()
+	})
+	pendingDeletes[trashPath] = timer
+	pendingDeletesMu.Unlock()
+
+	return trashPath, nil
+}
+
+func cancelSoftDelete(trashPath string) {
+	pendingDeletesMu.Lock()
+	defer pendingDeletesMu.Unlock()
+	if timer, ok := pendingDeletes[trashPath]; ok {
+		timer.Stop()
+		delete(pendingDeletes, trashPath)
+	}
+}
+
+func CleanupPendingDeletes() {
+	pendingDeletesMu.Lock()
+	defer pendingDeletesMu.Unlock()
+	for trashPath, timer := range pendingDeletes {
+		timer.Stop()
+		os.RemoveAll(trashPath)
+	}
+	pendingDeletes = make(map[string]*time.Timer)
+}
+
+func PushHistory(ev HistoryEvent) {
+	undoStack = append(undoStack, ev)
+	// Clear redo stack on new action
+	redoStack = nil
+}
+
+func Undo() (string, error) {
+	if len(undoStack) == 0 {
+		return "Nothing to undo", nil
+	}
+	// pop
+	ev := undoStack[len(undoStack)-1]
+	undoStack = undoStack[:len(undoStack)-1]
+
+	err := revertEvent(&ev)
+	if err != nil {
+		return "", fmt.Errorf("undo failed: %w", err)
+	}
+
+	redoStack = append(redoStack, ev)
+	return fmt.Sprintf("Undid %s", ev.Op), nil
+}
+
+func Redo() (string, error) {
+	if len(redoStack) == 0 {
+		return "Nothing to redo", nil
+	}
+	// pop
+	ev := redoStack[len(redoStack)-1]
+	redoStack = redoStack[:len(redoStack)-1]
+
+	err := applyEvent(&ev)
+	if err != nil {
+		return "", fmt.Errorf("redo failed: %w", err)
+	}
+
+	undoStack = append(undoStack, ev)
+	return fmt.Sprintf("Redid %s", ev.Op), nil
+}
+
+func revertEvent(ev *HistoryEvent) error {
+	switch ev.Op {
+	case OpRename, OpMove:
+		// To revert move/rename, move Dst back to Src
+		for _, item := range ev.Items {
+			if err := filesystem.Move(item.Dst, item.Src); err != nil {
+				return err
+			}
+		}
+	case OpCreateFile, OpCreateDir, OpCopy:
+		// To revert create/copy, remove Dst
+		for _, item := range ev.Items {
+			if err := filesystem.Remove(item.Dst, item.IsDir); err != nil {
+				return err
+			}
+		}
+	case OpDelete:
+		// To revert delete, move Dst (trash path) back to Src
+		for _, item := range ev.Items {
+			if err := filesystem.Move(item.Dst, item.Src); err != nil {
+				return fmt.Errorf("could not restore %s (maybe 20s passed?): %w", item.Src, err)
+			}
+			cancelSoftDelete(item.Dst)
+		}
+	}
+	return nil
+}
+
+func applyEvent(ev *HistoryEvent) error {
+	switch ev.Op {
+	case OpRename, OpMove:
+		for _, item := range ev.Items {
+			if err := filesystem.Move(item.Src, item.Dst); err != nil {
+				return err
+			}
+		}
+	case OpCreateFile:
+		for _, item := range ev.Items {
+			if err := filesystem.CreateFile(item.Dst); err != nil {
+				return err
+			}
+		}
+	case OpCreateDir:
+		for _, item := range ev.Items {
+			if err := filesystem.CreateDir(item.Dst); err != nil {
+				return err
+			}
+		}
+	case OpCopy:
+		for _, item := range ev.Items {
+			if item.IsDir {
+				if err := filesystem.CopyDir(item.Src, item.Dst); err != nil {
+					return err
+				}
+			} else {
+				if err := filesystem.CopyFile(item.Src, item.Dst); err != nil {
+					return err
+				}
+			}
+		}
+	case OpDelete:
+		for i, item := range ev.Items {
+			newTrashPath, err := SoftDeletePath(item.Src)
+			if err != nil {
+				return err
+			}
+			ev.Items[i].Dst = newTrashPath
+		}
+	}
+	return nil
+}

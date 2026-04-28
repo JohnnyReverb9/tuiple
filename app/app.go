@@ -226,6 +226,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
+			CleanupPendingDeletes()
 			return m, tea.Quit
 		case "-", "−": // Catch both ASCII minus and Unicode minus just in case
 			if m.preview.IsAudio() {
@@ -280,6 +281,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 				return filelist.RefreshListMsg{}
 			})
+		case "u":
+			msg, err := Undo()
+			if err != nil {
+				m.statusMsg = "Error: " + err.Error()
+			} else {
+				m.statusMsg = msg
+				m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
+			}
+			return m, nil
+		case "U":
+			msg, err := Redo()
+			if err != nil {
+				m.statusMsg = "Error: " + err.Error()
+			} else {
+				m.statusMsg = msg
+				m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
+			}
+			return m, nil
 		}
 
 	// ── File Operations ────────────────────────────────────────────
@@ -513,16 +532,22 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dialogMode == DialogDelete {
 			if msg.String() == "y" || msg.String() == "Y" {
 				var delErr error
+				var items []HistoryItem
 				for _, entry := range m.opEntries {
-					if err := filesystem.Remove(entry.Path, entry.IsDir); err != nil {
+					trashPath, err := SoftDeletePath(entry.Path)
+					if err != nil {
 						delErr = err
 						break
 					}
+					items = append(items, HistoryItem{Src: entry.Path, Dst: trashPath, IsDir: entry.IsDir})
 				}
 				m.dialogMode = DialogNone
 				if delErr != nil {
 					m.statusMsg = "Error: " + delErr.Error()
 				} else {
+					if len(items) > 0 {
+						PushHistory(HistoryEvent{Op: OpDelete, Items: items})
+					}
 					m.statusMsg = fmt.Sprintf("Deleted %d item(s)", len(m.opEntries))
 					m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
 					m.filelist, _ = m.filelist.Update(filelist.ClearSelectionMsg{})
@@ -541,11 +566,32 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var err error
 				switch m.dialogMode {
 				case DialogRename:
-					err = filesystem.Move(m.opEntries[0].Path, filepath.Join(m.currentPath, val))
+					dst := filepath.Join(m.currentPath, val)
+					err = filesystem.Move(m.opEntries[0].Path, dst)
+					if err == nil {
+						PushHistory(HistoryEvent{
+							Op:    OpRename,
+							Items: []HistoryItem{{Src: m.opEntries[0].Path, Dst: dst, IsDir: m.opEntries[0].IsDir}},
+						})
+					}
 				case DialogNewFile:
-					err = filesystem.CreateFile(filepath.Join(m.currentPath, val))
+					dst := filepath.Join(m.currentPath, val)
+					err = filesystem.CreateFile(dst)
+					if err == nil {
+						PushHistory(HistoryEvent{
+							Op:    OpCreateFile,
+							Items: []HistoryItem{{Dst: dst, IsDir: false}},
+						})
+					}
 				case DialogNewDir:
-					err = filesystem.CreateDir(filepath.Join(m.currentPath, val))
+					dst := filepath.Join(m.currentPath, val)
+					err = filesystem.CreateDir(dst)
+					if err == nil {
+						PushHistory(HistoryEvent{
+							Op:    OpCreateDir,
+							Items: []HistoryItem{{Dst: dst, IsDir: true}},
+						})
+					}
 				}
 				if err != nil {
 					m.statusMsg = "Error: " + err.Error()
@@ -567,6 +613,14 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handlePaste(items []clipboard.Item, op clipboard.OpType) (tea.Model, tea.Cmd) {
+	var itemsDone []HistoryItem
+	var opType OpType
+	if op == clipboard.OpCut {
+		opType = OpMove
+	} else {
+		opType = OpCopy
+	}
+
 	for _, item := range items {
 		dst := filepath.Join(m.currentPath, item.Entry.Name)
 		var err error
@@ -583,9 +637,13 @@ func (m Model) handlePaste(items []clipboard.Item, op clipboard.OpType) (tea.Mod
 			m.statusMsg = "Paste error: " + err.Error()
 			return m, nil
 		}
+		itemsDone = append(itemsDone, HistoryItem{Src: item.Entry.Path, Dst: dst, IsDir: item.Entry.IsDir})
 	}
 	if op == clipboard.OpCut {
 		clipboard.Clear()
+	}
+	if len(itemsDone) > 0 {
+		PushHistory(HistoryEvent{Op: opType, Items: itemsDone})
 	}
 	m.statusMsg = "Pasted successfully"
 	m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
@@ -709,6 +767,7 @@ func (m Model) renderHelp() string {
 		{"System & Options", []struct{ key, desc string }{
 			{".", "Toggle hidden files"},
 			{"o n / o s / o d", "Sort by: Name / Size / Date"},
+			{"u / U", "Undo / Redo file operation"},
 			{"S (Shift+s)", "Open Subshell here"},
 			{"?", "Toggle this help screen"},
 			{"q / Ctrl+C", "Quit"},

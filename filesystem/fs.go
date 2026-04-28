@@ -79,6 +79,10 @@ func ReadDir(path string, showHidden bool) ([]FileEntry, error) {
 		if !showHidden && isHidden {
 			continue
 		}
+		// Always hide tuiple trash files
+		if strings.Contains(name, ".tuiple_trash_") {
+			continue
+		}
 
 		fullPath := filepath.Join(path, name)
 
