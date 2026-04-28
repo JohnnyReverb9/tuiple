@@ -18,6 +18,7 @@
   - **Content Search** (`F`): RipGrep-style full text search inside your documents.
 - **Vim-Style Bookmarks:** Save any directory to a character (`m` + `char`) and jump across the galaxy instantly (`'` + `char`). Bookmarks are persistently saved!
 - **Multi-Select & Bulk Operations:** Mark dozens of files with `<Space>` and Copy/Cut/Delete them instantly.
+- **Safe Operations & History:** Full Undo/Redo stack (`u`/`U`) for file actions, including a 20-second soft-delete mechanism to prevent accidental data loss.
 - **Rich File Previews:** Look at file contents with syntax-like colors for specific extensions without opening them.
 - **Media Previews:** Native image, video thumbnail, and PDF rendering directly in the terminal using Unicode half-blocks.
 - **Built-in Audio Player:** Play MP3, FLAC, WAV, AAC, OGG and more right from the file manager with progress bar, seeking, and metadata display.
@@ -65,6 +66,7 @@ go build -o tuiple .
 | `Esc` | Clear all selections |
 | `c` / `x` / `p` | Copy / Cut / Paste |
 | `d` | Delete the selected file(s) |
+| `u` / `U` | Undo / Redo last file operation |
 | `r` | Rename current file |
 | `n` / `N` | Create new File / new Directory |
 
