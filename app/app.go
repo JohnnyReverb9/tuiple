@@ -381,8 +381,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Open images and videos in terminal using 'chafa'
 		if kind == mediarender.KindImage || kind == mediarender.KindVideo {
 			if _, err := exec.LookPath("chafa"); err == nil {
-				// Use chafa to render and wait for a keypress
-				shCmd := fmt.Sprintf("chafa %q; echo; echo 'Press Enter to return...'; read", msg.Path)
+				// Clear screen, show image in high quality, wait for any key, then clear again.
+				// This prevents image artifacts from remaining in the terminal buffer.
+				shCmd := fmt.Sprintf("clear; chafa %q; echo; echo '  Press any key to return...'; stty raw -echo; dd bs=1 count=1 2>/dev/null; stty -raw echo; clear", msg.Path)
 				cmd := exec.Command("sh", "-c", shCmd)
 				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 					return filelist.RefreshListMsg{}
