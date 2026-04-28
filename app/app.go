@@ -821,9 +821,9 @@ func (m Model) renderHelp() string {
 		items []struct{ key, desc string }
 	}{
 		{"Navigation", []struct{ key, desc string }{
-			{"↑/k, ↓/j", "Move up / down"},
-			{"Enter / l", "Enter dir / Open file"},
-			{"Backspace / h", "Go back to parent"},
+			{"↑, ↓", "Move up / down"},
+			{"Enter / →", "Enter dir / Open file"},
+			{"Backspace / ←", "Go back to parent"},
 			{"g / G", "Go to top / bottom"},
 			{"Ctrl+U / Ctrl+D", "Page up / down"},
 			{"~", "Go to home directory"},

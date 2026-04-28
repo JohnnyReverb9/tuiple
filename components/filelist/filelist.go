@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tuiple/components/preview/mediarender"
 	"tuiple/filesystem"
 	"tuiple/icons"
 	"tuiple/theme"
@@ -253,19 +254,25 @@ func (m Model) updateFilter(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
-	case "up", "k":
+	case "up":
 		if m.cursor > 0 {
 			m.cursor--
 			m.fixScroll()
 		}
-	case "down", "j":
+	case "down":
 		if m.cursor < len(m.entries)-1 {
 			m.cursor++
 			m.fixScroll()
 		}
-	case "enter", "right", "l":
+	case "enter", "right":
 		return m.enterSelected()
-	case "backspace", "left", "h":
+	case "l":
+		if entry := m.SelectedEntry(); entry != nil {
+			if mediarender.Classify(entry.Extension) == mediarender.KindAudio {
+				return m.enterSelected()
+			}
+		}
+	case "backspace", "left":
 		return m.goUp()
 	case "~":
 		return m.NavigateTo(filesystem.HomeDir())
