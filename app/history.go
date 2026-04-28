@@ -37,8 +37,43 @@ var (
 	redoStack []HistoryEvent
 
 	pendingDeletesMu sync.Mutex
-	pendingDeletes   = make(map[string]*time.Timer)
+	pendingDeletes   = make(map[string]pendingDelete)
 )
+
+type pendingDelete struct {
+	timer     *time.Timer
+	expiresAt time.Time
+}
+
+func ActiveDeletesCount() int {
+	pendingDeletesMu.Lock()
+	defer pendingDeletesMu.Unlock()
+	return len(pendingDeletes)
+}
+
+func NextDeleteRemaining() time.Duration {
+	pendingDeletesMu.Lock()
+	defer pendingDeletesMu.Unlock()
+
+	if len(pendingDeletes) == 0 {
+		return 0
+	}
+
+	var oldest time.Time
+	first := true
+	for _, p := range pendingDeletes {
+		if first || p.expiresAt.Before(oldest) {
+			oldest = p.expiresAt
+			first = false
+		}
+	}
+
+	rem := time.Until(oldest)
+	if rem < 0 {
+		return 0
+	}
+	return rem
+}
 
 func SoftDeletePath(src string) (string, error) {
 	dir := filepath.Dir(src)
@@ -58,7 +93,10 @@ func SoftDeletePath(src string) (string, error) {
 		delete(pendingDeletes, trashPath)
 		pendingDeletesMu.Unlock()
 	})
-	pendingDeletes[trashPath] = timer
+	pendingDeletes[trashPath] = pendingDelete{
+		timer:     timer,
+		expiresAt: time.Now().Add(20 * time.Second),
+	}
 	pendingDeletesMu.Unlock()
 
 	return trashPath, nil
@@ -67,8 +105,8 @@ func SoftDeletePath(src string) (string, error) {
 func cancelSoftDelete(trashPath string) {
 	pendingDeletesMu.Lock()
 	defer pendingDeletesMu.Unlock()
-	if timer, ok := pendingDeletes[trashPath]; ok {
-		timer.Stop()
+	if pd, ok := pendingDeletes[trashPath]; ok {
+		pd.timer.Stop()
 		delete(pendingDeletes, trashPath)
 	}
 }
@@ -76,11 +114,11 @@ func cancelSoftDelete(trashPath string) {
 func CleanupPendingDeletes() {
 	pendingDeletesMu.Lock()
 	defer pendingDeletesMu.Unlock()
-	for trashPath, timer := range pendingDeletes {
-		timer.Stop()
+	for trashPath, pd := range pendingDeletes {
+		pd.timer.Stop()
 		os.RemoveAll(trashPath)
 	}
-	pendingDeletes = make(map[string]*time.Timer)
+	pendingDeletes = make(map[string]pendingDelete)
 }
 
 func PushHistory(ev HistoryEvent) {

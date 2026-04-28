@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,6 +23,14 @@ import (
 	"tuiple/filesystem"
 	"tuiple/theme"
 )
+
+type deleteTickMsg time.Time
+
+func deleteTick() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return deleteTickMsg(t)
+	})
+}
 
 // ── Dialog / State ─────────────────────────────────────────────────────
 
@@ -65,6 +74,8 @@ type Model struct {
 
 	active      panel
 	currentPath string
+
+	deletesTicking bool
 
 	width  int
 	height int
@@ -184,6 +195,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case deleteTickMsg:
+		if ActiveDeletesCount() > 0 {
+			return m, deleteTick()
+		}
+		m.deletesTicking = false
+		return m, nil
+
 	// ── Mouse Router ───────────────────────────────────────────────
 	case tea.MouseMsg:
 		if msg.Type != tea.MouseWheelUp && msg.Type != tea.MouseWheelDown {
@@ -424,6 +442,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if entry := m.filelist.SelectedEntry(); entry != nil {
 			cmds = append(cmds, m.preview.LoadFile(*entry))
 		}
+	}
+
+	if ActiveDeletesCount() > 0 && !m.deletesTicking {
+		m.deletesTicking = true
+		cmds = append(cmds, deleteTick())
 	}
 
 	return m, tea.Batch(cmds...)
@@ -710,6 +733,13 @@ func (m Model) renderStatusBar() string {
 	if m.statusMsg != "" {
 		leftStr += "  [" + m.statusMsg + "]"
 	}
+
+	delCount := ActiveDeletesCount()
+	if delCount > 0 {
+		rem := NextDeleteRemaining()
+		leftStr += fmt.Sprintf("  [%d pending (%ds)]", delCount, int(rem.Seconds()))
+	}
+
 	left := theme.StatusPath.Render(leftStr)
 
 	entryCount := len(m.filelist.Entries())
