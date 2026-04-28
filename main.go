@@ -10,6 +10,12 @@ import (
 )
 
 func main() {
+	if os.Getenv("TUIPLE_ACTIVE") == "1" {
+		fmt.Fprintf(os.Stderr, "Error: Tuiple is already running in this terminal session.\n")
+		os.Exit(1)
+	}
+	os.Setenv("TUIPLE_ACTIVE", "1")
+
 	startDir, err := os.UserHomeDir()
 	if err != nil {
 		startDir, _ = os.Getwd()
