@@ -374,6 +374,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		ext := strings.ToLower(filepath.Ext(msg.Path))
+		
+		// Attempt to open e-books and documents using Bookokrat
+		if ext == ".pdf" || ext == ".epub" || ext == ".djvu" {
+			if _, err := exec.LookPath("bookokrat"); err == nil {
+				cmd := exec.Command("bookokrat", msg.Path)
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+					return filelist.RefreshListMsg{}
+				})
+			}
+		}
+
+		if ext == ".pdf" {
+			if _, err := exec.LookPath("pdftotext"); err == nil {
+				// Extract PDF text and read it with 'less' as fallback
+				shCmd := fmt.Sprintf("pdftotext %q - | less -r", msg.Path)
+				cmd := exec.Command("sh", "-c", shCmd)
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+					return filelist.RefreshListMsg{}
+				})
+			}
+		}
+
 		editor := os.Getenv("EDITOR")
 		if editor == "" {
 			editor = "vi" // Default fallback editor
