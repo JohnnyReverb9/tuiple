@@ -12,15 +12,17 @@
 ### ✨ Key Features
 
 - **Modern UI:** Unobtrusive three-panel layout (Sidebar, File List, File Preview) that intelligently conforms to your terminal.
-- **Smart Navigation:** Native `hjkl` bindings. 
+- **Smart Navigation:** Intuitive arrow key navigation with instant directory jumps. 
 - **Lightning Fast Search Engine:** 
-  - **Fuzzy Name Search** (`f`): Rapidly find files nested up to 4 directories deep.
-  - **Content Search** (`F`): RipGrep-style full text search inside your documents.
+- **Fuzzy Name Search** (`f`): Rapidly find files nested up to 4 directories deep.
+- **Content Search** (`F`): RipGrep-style full text search inside your documents.
 - **Vim-Style Bookmarks:** Save any directory to a character (`m` + `char`) and jump across the galaxy instantly (`'` + `char`). Bookmarks are persistently saved!
 - **Multi-Select & Bulk Operations:** Mark dozens of files with `<Space>` and Copy/Cut/Delete them instantly.
 - **Safe Operations & History:** Full Undo/Redo stack (`u`/`U`) for file actions, including a 20-second soft-delete mechanism to prevent accidental data loss.
 - **Rich File Previews:** Look at file contents with syntax-like colors for specific extensions without opening them.
 - **Media Previews:** Native image, video thumbnail, and PDF rendering directly in the terminal using Unicode half-blocks.
+- **Terminal Image Viewer:** Open images in high quality directly in your terminal using `chafa`.
+- **E-Book & Document Reader:** Native integration with `bookokrat` for reading PDF, EPUB, and DJVU files without leaving the terminal.
 - **Built-in Audio Player:** Play MP3, FLAC, WAV, AAC, OGG and more right from the file manager with progress bar, seeking, and metadata display.
 - **Instant Shell Drops:** Press `S` to pause Tuiple, drop seamlessly into a robust bash/zsh shell to execute commands, and instantly teleport right back.
 - **Mouse Support:** Scroll through everything using native touchpad/mouse wheel bindings!
@@ -50,10 +52,10 @@ go build -o tuiple .
 **Navigation**
 | Key | Action |
 | --- | --- |
-| `↑` / `k` | Move cursor up |
-| `↓` / `j` | Move cursor down |
-| `Enter` / `l` | Enter directory / **Open file in `$EDITOR`** |
-| `Backspace` / `h` | Go back to parent directory |
+| `↑` | Move cursor up |
+| `↓` | Move cursor down |
+| `Enter` / `→` | Enter directory / **Open file** |
+| `Backspace` / `←` | Go back to parent directory |
 | `g` / `G` | Jump to the very top / bottom |
 | `Ctrl+u` / `Ctrl+d` | Page up / Page down |
 | `~` | Fly to Home directory |
@@ -99,13 +101,18 @@ go build -o tuiple .
 
 ## 📦 Optional Dependencies
 
+To unlock the full potential of Tuiple, it is recommended to install the following utilities:
+
 | Tool | Used for |
 | --- | --- |
-| `ffmpeg` | Video thumbnails, audio seeking |
-| `afplay` | Audio playback (macOS built-in) |
-| `afinfo` | Audio metadata parsing (macOS built-in) |
+| `chafa` | **High-quality Image & Video viewing** in the terminal. |
+| `bookokrat` | **Terminal E-book reader** (PDF, EPUB, DJVU). |
+| `pdftotext` | Fallback text extraction for PDF files. |
+| `ffmpeg` | Video thumbnails, audio seeking. |
+| `afplay` | Audio playback (macOS built-in). |
+| `afinfo` | Audio metadata parsing (macOS built-in). |
 
-> Audio playback works out-of-the-box on macOS. Seeking requires `ffmpeg` (`brew install ffmpeg`).
+> **Tip:** On macOS, you can install most of these via Homebrew: `brew install chafa ffmpeg poppler`. `bookokrat` can be found on its GitHub repository.
 
 ---
 
