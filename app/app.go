@@ -24,11 +24,11 @@ import (
 	"tuiple/theme"
 )
 
-type deleteTickMsg time.Time
+type deleteTickMsg struct{}
 
 func deleteTick() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
-		return deleteTickMsg(t)
+	return tea.Tick(time.Second, func(_ time.Time) tea.Msg {
+		return deleteTickMsg{}
 	})
 }
 
@@ -117,6 +117,14 @@ func (m Model) Init() tea.Cmd {
 // ── Update ─────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(deleteTickMsg); ok {
+		if ActiveDeletesCount() > 0 {
+			return m, deleteTick()
+		}
+		m.deletesTicking = false
+		return m, nil
+	}
+
 	// ── Intercept Search Overlay ───────────────────────────────────
 	if m.searchOverlay.IsActive() {
 		var cmd tea.Cmd
@@ -195,13 +203,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case deleteTickMsg:
-		if ActiveDeletesCount() > 0 {
-			return m, deleteTick()
-		}
-		m.deletesTicking = false
-		return m, nil
-
 	// ── Mouse Router ───────────────────────────────────────────────
 	case tea.MouseMsg:
 		if msg.Type != tea.MouseWheelUp && msg.Type != tea.MouseWheelDown {
@@ -300,23 +301,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return filelist.RefreshListMsg{}
 			})
 		case "u":
-			msg, err := Undo()
+			undoMsg, err := Undo()
 			if err != nil {
 				m.statusMsg = "Error: " + err.Error()
 			} else {
-				m.statusMsg = msg
+				m.statusMsg = undoMsg
 				m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
 			}
-			return m, nil
+			var cmd tea.Cmd
+			if ActiveDeletesCount() > 0 && !m.deletesTicking {
+				m.deletesTicking = true
+				cmd = deleteTick()
+			}
+			return m, cmd
 		case "U":
-			msg, err := Redo()
+			redoMsg, err := Redo()
 			if err != nil {
 				m.statusMsg = "Error: " + err.Error()
 			} else {
-				m.statusMsg = msg
+				m.statusMsg = redoMsg
 				m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
 			}
-			return m, nil
+			var cmd tea.Cmd
+			if ActiveDeletesCount() > 0 && !m.deletesTicking {
+				m.deletesTicking = true
+				cmd = deleteTick()
+			}
+			return m, cmd
 		}
 
 	// ── File Operations ────────────────────────────────────────────
@@ -574,6 +585,12 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusMsg = fmt.Sprintf("Deleted %d item(s)", len(m.opEntries))
 					m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
 					m.filelist, _ = m.filelist.Update(filelist.ClearSelectionMsg{})
+					var cmd tea.Cmd
+					if ActiveDeletesCount() > 0 && !m.deletesTicking {
+						m.deletesTicking = true
+						cmd = deleteTick()
+					}
+					return m, cmd
 				}
 				return m, nil
 			} else if msg.String() == "n" || msg.String() == "N" {

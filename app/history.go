@@ -181,7 +181,10 @@ func revertEvent(ev *HistoryEvent) error {
 		// To revert delete, move Dst (trash path) back to Src
 		for _, item := range ev.Items {
 			if err := filesystem.Move(item.Dst, item.Src); err != nil {
-				return fmt.Errorf("could not restore %s (maybe 20s passed?): %w", item.Src, err)
+				if os.IsNotExist(err) {
+					return fmt.Errorf("file already permanently deleted")
+				}
+				return fmt.Errorf("could not restore %s: %w", filepath.Base(item.Src), err)
 			}
 			cancelSoftDelete(item.Dst)
 		}
