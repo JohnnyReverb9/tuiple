@@ -192,7 +192,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case RefreshListMsg:
+		var selectedName string
+		if e := m.SelectedEntry(); e != nil {
+			selectedName = e.Name
+		}
 		m.loadEntries()
+		if selectedName != "" {
+			for i, e := range m.entries {
+				if e.Name == selectedName {
+					m.cursor = i
+					break
+				}
+			}
+		}
+		if m.cursor >= len(m.entries) {
+			m.cursor = max(0, len(m.entries)-1)
+		}
 		m.fixScroll()
 		return m, nil
 	case SortListMsg:
@@ -357,7 +372,8 @@ func (m Model) enterSelected() (Model, tea.Cmd) {
 }
 
 func (m Model) goUp() (Model, tea.Cmd) {
-	// Try history
+	childName := filepath.Base(m.currentPath)
+
 	if len(m.history) > 0 {
 		prev := m.history[len(m.history)-1]
 		m.history = m.history[:len(m.history)-1]
@@ -367,14 +383,30 @@ func (m Model) goUp() (Model, tea.Cmd) {
 		m.filter = ""
 		m.filtering = false
 		m.loadEntries()
+		for i, e := range m.entries {
+			if e.Name == childName {
+				m.cursor = i
+				m.fixScroll()
+				break
+			}
+		}
 		return m, func() tea.Msg { return DirChangedMsg{Path: m.currentPath} }
 	}
 
 	parent := filepath.Dir(m.currentPath)
 	if parent == m.currentPath {
-		return m, nil // already at root
+		return m, nil
 	}
-	return m.NavigateTo(parent)
+
+	newM, cmd := m.NavigateTo(parent)
+	for i, e := range newM.entries {
+		if e.Name == childName {
+			newM.cursor = i
+			newM.fixScroll()
+			break
+		}
+	}
+	return newM, cmd
 }
 
 // ── View ───────────────────────────────────────────────────────────────

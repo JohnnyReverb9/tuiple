@@ -33,6 +33,20 @@ func deleteTick() tea.Cmd {
 	})
 }
 
+type dirPollMsg struct{}
+
+func dirPollCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(_ time.Time) tea.Msg {
+		return dirPollMsg{}
+	})
+}
+
+func (m *Model) updateLastDirMod(path string) {
+	if info, err := os.Stat(path); err == nil {
+		m.lastDirMod = info.ModTime()
+	}
+}
+
 // ── Dialog / State ─────────────────────────────────────────────────────
 
 type DialogMode int
@@ -83,6 +97,8 @@ type Model struct {
 
 	showHelp bool
 	ready    bool
+
+	lastDirMod time.Time
 }
 
 // New creates the application model.
@@ -94,6 +110,11 @@ func New(startDir string) Model {
 	ti.PlaceholderStyle = theme.Dim
 	ti.TextStyle = theme.Normal
 
+	var lastMod time.Time
+	if info, err := os.Stat(startDir); err == nil {
+		lastMod = info.ModTime()
+	}
+
 	return Model{
 		sidebar:       sidebar.New(),
 		filelist:      filelist.New(startDir),
@@ -102,17 +123,19 @@ func New(startDir string) Model {
 		searchOverlay: search.New(),
 		active:        panelFileList,
 		currentPath:   startDir,
+		lastDirMod: lastMod,
 	}
 }
 
 // ── Init ───────────────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
-	// Load preview for the first selected file
+	var cmds []tea.Cmd
 	if entry := m.filelist.SelectedEntry(); entry != nil {
-		return m.preview.LoadFile(*entry)
+		cmds = append(cmds, m.preview.LoadFile(*entry))
 	}
-	return nil
+	cmds = append(cmds, dirPollCmd())
+	return tea.Batch(cmds...)
 }
 
 // ── Update ─────────────────────────────────────────────────────────────
@@ -124,6 +147,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.deletesTicking = false
 		return m, nil
+	}
+
+	if _, ok := msg.(dirPollMsg); ok {
+		if info, err := os.Stat(m.currentPath); err == nil {
+			if info.ModTime().After(m.lastDirMod) {
+				m.lastDirMod = info.ModTime()
+				m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
+			}
+		}
+		return m, dirPollCmd()
 	}
 
 	// ── Intercept Search Overlay ───────────────────────────────────
@@ -434,6 +467,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── Sidebar navigation ─────────────────────────────────────────
 	case sidebar.NavigateMsg:
 		m.currentPath = msg.Path
+		m.updateLastDirMod(msg.Path)
 		var cmd tea.Cmd
 		m.filelist, cmd = m.filelist.NavigateTo(msg.Path)
 		cmds = append(cmds, cmd)
