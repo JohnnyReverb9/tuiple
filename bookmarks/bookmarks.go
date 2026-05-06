@@ -10,7 +10,7 @@ import (
 
 var (
 	marksPath = filepath.Join(filesystem.HomeDir(), ".config", "tuiple", "bookmarks.json")
-	marks     = make(map[rune]string)
+	favorites []string
 )
 
 func init() {
@@ -29,13 +29,20 @@ func Load() {
 	if err != nil {
 		return
 	}
+	// Try parsing as array of strings
+	var paths []string
+	if err := json.Unmarshal(data, &paths); err == nil {
+		favorites = paths
+		return
+	}
+	
+	// Legacy migration: if it was a map
 	var stringMap map[string]string
 	if err := json.Unmarshal(data, &stringMap); err == nil {
-		for k, v := range stringMap {
-			if len(k) > 0 {
-				marks[rune(k[0])] = v
-			}
+		for _, v := range stringMap {
+			favorites = append(favorites, v)
 		}
+		Save() // Upgrade to new format
 	}
 }
 
@@ -44,25 +51,28 @@ func Save() error {
 	if err := EnsureConfigDir(); err != nil {
 		return err
 	}
-	stringMap := make(map[string]string)
-	for k, v := range marks {
-		stringMap[string(k)] = v
-	}
-	data, err := json.MarshalIndent(stringMap, "", "  ")
+	data, err := json.MarshalIndent(favorites, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(marksPath, data, 0644)
 }
 
-// Set marks a character to a specific path.
-func Set(char rune, path string) error {
-	marks[char] = path
-	return Save()
+// Toggle toggles a path in the favorites list. Returns true if added, false if removed.
+func Toggle(path string) (bool, error) {
+	for i, f := range favorites {
+		if f == path {
+			// Remove it
+			favorites = append(favorites[:i], favorites[i+1:]...)
+			return false, Save()
+		}
+	}
+	// Add it
+	favorites = append(favorites, path)
+	return true, Save()
 }
 
-// Get returns the path for a character mark, and ok if found.
-func Get(char rune) (string, bool) {
-	path, ok := marks[char]
-	return path, ok
+// GetFavorites returns the current list of favorite paths.
+func GetFavorites() []string {
+	return favorites
 }

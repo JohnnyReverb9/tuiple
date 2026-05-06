@@ -83,8 +83,6 @@ type Model struct {
 	statusMsg  string
 
 	searchOverlay    search.Model
-	awaitingBookmark bool
-	awaitingJump     bool
 	awaitingSort     bool
 
 	active      panel
@@ -184,36 +182,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDialog(msg)
 	}
 
-	// ── Bookmarks & Sorting ───────────────────────────────────────
-	if m.awaitingBookmark {
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			m.awaitingBookmark = false
-			if len(keyMsg.Runes) > 0 {
-				r := keyMsg.Runes[0]
-				bookmarks.Set(r, m.currentPath)
-				m.statusMsg = fmt.Sprintf("Saved mark '%c'", r)
-			}
-			return m, nil
-		}
-	}
-	if m.awaitingJump {
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			m.awaitingJump = false
-			if len(keyMsg.Runes) > 0 {
-				r := keyMsg.Runes[0]
-				if path, ok := bookmarks.Get(r); ok {
-					m.currentPath = path
-					var cmd tea.Cmd
-					m.filelist, cmd = m.filelist.NavigateTo(path)
-					m.statusMsg = fmt.Sprintf("Jumped to mark '%c'", r)
-					return m, cmd
-				} else {
-					m.statusMsg = fmt.Sprintf("Mark '%c' not set", r)
-				}
-			}
-			return m, nil
-		}
-	}
+	// ── Sorting ───────────────────────────────────────
 	if m.awaitingSort {
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
 			m.awaitingSort = false
@@ -312,13 +281,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.searchOverlay.Start(search.ModeNameSearch, m.currentPath)
 		case "F":
 			return m, m.searchOverlay.Start(search.ModeContentSearch, m.currentPath)
-		case "m":
-			m.awaitingBookmark = true
-			m.statusMsg = "Press character to mark..."
-			return m, nil
 		case "'":
-			m.awaitingJump = true
-			m.statusMsg = "Press character to jump..."
+			added, err := bookmarks.Toggle(m.currentPath)
+			if err != nil {
+				m.statusMsg = "Error saving bookmark: " + err.Error()
+			} else {
+				if added {
+					m.statusMsg = "Added to favorites"
+				} else {
+					m.statusMsg = "Removed from favorites"
+				}
+				m.sidebar = sidebar.New() // Reload sidebar to show updated favorites
+				m.updateSizes()
+			}
 			return m, nil
 		case "o":
 			m.awaitingSort = true

@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tuiple/bookmarks"
 	"tuiple/filesystem"
 	"tuiple/theme"
 )
@@ -51,6 +52,17 @@ func New() Model {
 		{"Documents", filepath.Join(home, "Documents")},
 		{"Downloads", filepath.Join(home, "Downloads")},
 	})
+
+	// Add dynamic favorites
+	for _, f := range bookmarks.GetFavorites() {
+		// Only add if it still exists
+		if _, err := os.Stat(f); err == nil {
+			favItems = append(favItems, item{
+				name: filepath.Base(f),
+				path: f,
+			})
+		}
+	}
 
 	locItems := []item{
 		{"Macintosh HD", "/"},
