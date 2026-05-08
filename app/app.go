@@ -541,7 +541,7 @@ func (m Model) View() string {
 
 	// Search Overlay
 	if m.searchOverlay.IsActive() {
-		m.searchOverlay.SetWidth(m.width / 2)
+		m.searchOverlay.SetSize(m.width/2, contentH)
 		overlay := m.searchOverlay.View()
 		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
 	}
@@ -850,8 +850,7 @@ func (m Model) renderHelp() string {
 			{"f", "Search file by name (Fuzzy)"},
 			{"F", "Search in file contents"},
 			{"/", "Live list filter"},
-			{"m + <char>", "Save bookmark to <char>"},
-			{"' + <char>", "Jump to bookmark <char>"},
+			{"'", "(Un)Bookmark current path to Favorites"},
 		}},
 		{"Audio Player", []struct{ key, desc string }{
 			{"l", "Play / Pause audio"},

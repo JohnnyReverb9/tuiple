@@ -78,8 +78,7 @@ go build -o tuiple .
 | `f` | Open Fuzzy File Search (by name) |
 | `F` | Open Full-Text Search (in contents) |
 | `/` | Live list filter |
-| `m` + `<char>` | Bookmark current path to `<char>` |
-| `'` + `<char>` | Jump globally to bookmark `<char>` |
+| `'` | (Un)Bookmark current path to Favorites |
 
 **Audio Player** *(when an audio file is selected)*
 | Key | Action |

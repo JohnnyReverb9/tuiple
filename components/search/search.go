@@ -39,6 +39,7 @@ type Model struct {
 	rootPath   string
 	active     bool
 	width      int
+	height     int
 }
 
 // New creates a new Search overlay model.
@@ -53,8 +54,8 @@ func New() Model {
 	}
 }
 
-func (m *Model) SetWidth(w int) { m.width = w }
-func (m Model) IsActive() bool  { return m.active }
+func (m *Model) SetSize(w, h int) { m.width = w; m.height = h }
+func (m Model) IsActive() bool    { return m.active }
 
 // Start opens the search overlay in the specified mode for the given root path.
 func (m *Model) Start(mode SearchMode, rootPath string) tea.Cmd {
@@ -152,7 +153,7 @@ func (m Model) View() string {
 	if m.mode == ModeContentSearch {
 		headerTitle = " 🔍 MATCH IN FILES "
 	}
-	
+
 	header := lipgloss.NewStyle().
 		Background(theme.AccentMagenta).
 		Foreground(theme.BgColor).
@@ -167,14 +168,18 @@ func (m Model) View() string {
 		Width(w).
 		Render(m.input.View())
 
+	// Calculate available lines for results list.
+	// Overhead: header(1) + input(1) + input border(1) + box border top/bottom(2) = 5
+	visibleMax := max(1, m.height-5)
+
 	// List
 	var listLines []string
-	start := max(0, m.cursor-maxListHeight/2)
-	end := min(len(m.results), start+maxListHeight)
+	start := max(0, m.cursor-visibleMax/2)
+	end := min(len(m.results), start+visibleMax)
 
 	if start > 0 {
-		start = min(start, max(0, len(m.results)-maxListHeight))
-		end = min(len(m.results), start+maxListHeight)
+		start = min(start, max(0, len(m.results)-visibleMax))
+		end = min(len(m.results), start+visibleMax)
 	}
 
 	if len(m.results) == 0 {
@@ -182,7 +187,7 @@ func (m Model) View() string {
 	} else {
 		for i := start; i < end; i++ {
 			res := m.results[i]
-			
+
 			var lineStr string
 			if m.mode == ModeNameSearch {
 				lineStr = filesystem.ShortenPath(res.Path)
@@ -195,7 +200,7 @@ func (m Model) View() string {
 				}
 				lineStr = fmt.Sprintf("%s:%d | %s", res.Name, res.LineNum, text)
 			}
-			
+
 			isCursor := i == m.cursor
 			if isCursor {
 				lineStr = theme.ListCursor.Width(w).Render(" > " + lineStr)
@@ -204,6 +209,11 @@ func (m Model) View() string {
 			}
 			listLines = append(listLines, lineStr)
 		}
+	}
+
+	// Pad list to fixed height so box size never changes
+	for len(listLines) < visibleMax {
+		listLines = append(listLines, strings.Repeat(" ", w))
 	}
 
 	listView := strings.Join(listLines, "\n")
