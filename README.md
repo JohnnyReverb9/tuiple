@@ -16,7 +16,7 @@
 - **Lightning Fast Search Engine:** 
 - **Fuzzy Name Search** (`f`): Rapidly find files nested up to 4 directories deep.
 - **Content Search** (`F`): RipGrep-style full text search inside your documents.
-- **Vim-Style Bookmarks:** Save any directory to a character (`m` + `char`) and jump across the galaxy instantly (`'` + `char`). Bookmarks are persistently saved!
+- **Bookmarks:** Save any directory to Favorites (`'`) and jump across the galaxy instantly.
 - **Multi-Select & Bulk Operations:** Mark dozens of files with `<Space>` and Copy/Cut/Delete them instantly.
 - **Safe Operations & History:** Full Undo/Redo stack (`u`/`U`) for file actions, including a 20-second soft-delete mechanism to prevent accidental data loss.
 - **Rich File Previews:** Look at file contents with syntax-like colors for specific extensions without opening them.
