@@ -160,37 +160,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── Intercept Search Overlay ───────────────────────────────────
 	if m.searchOverlay.IsActive() {
 		var cmd tea.Cmd
-		prevActive := m.searchOverlay.IsActive()
 		m.searchOverlay, cmd = m.searchOverlay.Update(msg)
-
-		if compMsg, ok := msg.(search.SearchCompletedMsg); ok {
-			dir := filepath.Dir(compMsg.SelectedPath)
-			m.currentPath = dir
-			var listCmd tea.Cmd
-			m.filelist, listCmd = m.filelist.NavigateTo(dir)
-			m.filelist = m.filelist.SelectByName(filepath.Base(compMsg.SelectedPath))
-			var batch []tea.Cmd
-			batch = append(batch, cmd, listCmd)
-			if entry := m.filelist.SelectedEntry(); entry != nil {
-				batch = append(batch, m.preview.LoadFile(*entry))
-			}
-			if compMsg.Mode == search.ModeContentSearch && compMsg.LineNum > 0 {
-				editor := os.Getenv("EDITOR")
-				if editor == "" {
-					editor = "vi"
-				}
-				lineArg := fmt.Sprintf("+%d", compMsg.LineNum)
-				editorCmd := exec.Command(editor, lineArg, compMsg.SelectedPath)
-				batch = append(batch, tea.ExecProcess(editorCmd, func(err error) tea.Msg {
-					return filelist.RefreshListMsg{}
-				}))
-			}
-			return m, tea.Batch(batch...)
-		}
-
-		if !m.searchOverlay.IsActive() && prevActive {
-			return m, cmd
-		}
 		return m, cmd
 	}
 
@@ -463,6 +433,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textInput.SetValue("")
 		m.textInput.Focus()
 		return m, nil
+
+	// ── Search completed ──────────────────────────────────────────
+	case search.SearchCompletedMsg:
+		dir := filepath.Dir(msg.SelectedPath)
+		m.currentPath = dir
+		var listCmd tea.Cmd
+		m.filelist, listCmd = m.filelist.NavigateTo(dir)
+		m.filelist = m.filelist.SelectByName(filepath.Base(msg.SelectedPath))
+		cmds = append(cmds, listCmd)
+		if entry := m.filelist.SelectedEntry(); entry != nil {
+			cmds = append(cmds, m.preview.LoadFile(*entry))
+		}
+		if msg.Mode == search.ModeContentSearch && msg.LineNum > 0 {
+			editor := os.Getenv("EDITOR")
+			if editor == "" {
+				editor = "vi"
+			}
+			lineArg := fmt.Sprintf("+%d", msg.LineNum)
+			editorCmd := exec.Command(editor, lineArg, msg.SelectedPath)
+			cmds = append(cmds, tea.ExecProcess(editorCmd, func(err error) tea.Msg {
+				return filelist.RefreshListMsg{}
+			}))
+		}
+		return m, tea.Batch(cmds...)
 
 	// ── Sidebar navigation ─────────────────────────────────────────
 	case sidebar.NavigateMsg:
