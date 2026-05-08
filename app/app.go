@@ -168,7 +168,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentPath = dir
 			var listCmd tea.Cmd
 			m.filelist, listCmd = m.filelist.NavigateTo(dir)
-			return m, tea.Batch(cmd, listCmd)
+			m.filelist = m.filelist.SelectByName(filepath.Base(compMsg.SelectedPath))
+			var batch []tea.Cmd
+			batch = append(batch, cmd, listCmd)
+			if entry := m.filelist.SelectedEntry(); entry != nil {
+				batch = append(batch, m.preview.LoadFile(*entry))
+			}
+			if compMsg.Mode == search.ModeContentSearch && compMsg.LineNum > 0 {
+				editor := os.Getenv("EDITOR")
+				if editor == "" {
+					editor = "vi"
+				}
+				lineArg := fmt.Sprintf("+%d", compMsg.LineNum)
+				editorCmd := exec.Command(editor, lineArg, compMsg.SelectedPath)
+				batch = append(batch, tea.ExecProcess(editorCmd, func(err error) tea.Msg {
+					return filelist.RefreshListMsg{}
+				}))
+			}
+			return m, tea.Batch(batch...)
 		}
 
 		if !m.searchOverlay.IsActive() && prevActive {
