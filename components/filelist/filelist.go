@@ -88,6 +88,7 @@ func New(path string) Model {
 func (m Model) CursorIdx() int                    { return m.cursor }
 func (m Model) CurrentPath() string                { return m.currentPath }
 func (m Model) Entries() []filesystem.FileEntry    { return m.entries }
+func (m Model) IsFiltering() bool                  { return m.filtering }
 
 func (m Model) SelectedEntry() *filesystem.FileEntry {
 	if m.cursor >= 0 && m.cursor < len(m.entries) {

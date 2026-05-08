@@ -246,6 +246,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Global keys ────────────────────────────────────────────────
 	case tea.KeyMsg:
+		if m.filelist.IsFiltering() {
+			var cmd tea.Cmd
+			m.filelist, cmd = m.filelist.Update(msg)
+			if entry := m.filelist.SelectedEntry(); entry != nil {
+				cmds = append(cmds, m.preview.LoadFile(*entry))
+			}
+			return m, tea.Batch(append(cmds, cmd)...)
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			CleanupPendingDeletes()
