@@ -31,21 +31,25 @@ func NameSearch(root, query string, maxDepth int) []SearchMatch {
 		if err != nil {
 			return nil
 		}
-		
+
+		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+
 		// calculate depth
 		rel, err := filepath.Rel(root, path)
 		if err != nil || rel == "." {
 			return nil
 		}
 		depth := strings.Count(rel, string(os.PathSeparator)) + 1
-		
+
 		if depth > maxDepth {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		
+
 		allPaths = append(allPaths, path)
 		return nil
 	})
@@ -75,7 +79,14 @@ func ContentSearch(root, query string, maxDepth int) []SearchMatch {
 	var results []SearchMatch
 
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
