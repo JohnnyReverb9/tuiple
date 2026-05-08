@@ -23,6 +23,8 @@ const (
 // SearchCompletedMsg is emitted when a search is finished and an item is selected.
 type SearchCompletedMsg struct {
 	SelectedPath string
+	LineNum      int
+	Mode         SearchMode
 }
 
 const (
@@ -107,10 +109,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if len(m.results) > 0 && m.cursor >= 0 && m.cursor < len(m.results) {
-				path := m.results[m.cursor].Path
+				res := m.results[m.cursor]
+				mode := m.mode
 				m.Stop()
 				return m, func() tea.Msg {
-					return SearchCompletedMsg{SelectedPath: path}
+					return SearchCompletedMsg{SelectedPath: res.Path, LineNum: res.LineNum, Mode: mode}
 				}
 			}
 			// If no results, just close
