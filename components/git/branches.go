@@ -277,30 +277,106 @@ func (m *BranchesPopup) doRebase() {
 }
 
 func (m *BranchesPopup) doPush() {
-	if err := Push(m.repo); err != nil {
+	out, err := Push(m.repo)
+	if err != nil {
 		m.setStatus(err.Error(), true)
 		return
 	}
-	m.setStatus("pushed successfully", false)
+	m.setStatus(parsePushOutput(out), false)
 	m.reload()
 }
 
 func (m *BranchesPopup) doPull() {
-	if err := Pull(m.repo); err != nil {
+	out, err := Pull(m.repo)
+	if err != nil {
 		m.setStatus(err.Error(), true)
 		return
 	}
-	m.setStatus("pulled successfully", false)
+	m.setStatus(parsePullOutput(out), false)
 	m.reload()
 }
 
 func (m *BranchesPopup) doFetch() {
-	if err := Fetch(m.repo); err != nil {
+	out, err := Fetch(m.repo)
+	if err != nil {
 		m.setStatus(err.Error(), true)
 		return
 	}
-	m.setStatus("fetched all remotes", false)
+	m.setStatus(parseFetchOutput(out), false)
 	m.reload()
+}
+
+// ── Output parsers ────────────────────────────────────────────────────
+
+// parsePushOutput distils `git push` combined output into one short line.
+func parsePushOutput(out string) string {
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "everything up-to-date") ||
+		strings.Contains(lower, "up to date") {
+		return "nothing to push – already up-to-date"
+	}
+	// "  branch1 -> origin/branch1" or similar ref-update lines
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "->") {
+			return "pushed: " + line
+		}
+	}
+	if out != "" {
+		return firstLine(strings.TrimSpace(out))
+	}
+	return "pushed"
+}
+
+// parsePullOutput distils `git pull` combined output into one short line.
+func parsePullOutput(out string) string {
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "already up to date") {
+		return "already up to date"
+	}
+	// "Updating abc1234..def5678" → show that line directly
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "Updating ") {
+			return strings.TrimSpace(line)
+		}
+	}
+	// "N files changed, M insertions(+), K deletions(-)"
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "changed") || strings.Contains(line, "insertion") {
+			return strings.TrimSpace(line)
+		}
+	}
+	if out != "" {
+		return firstLine(strings.TrimSpace(out))
+	}
+	return "pulled"
+}
+
+// parseFetchOutput distils `git fetch` combined output into one short line.
+func parseFetchOutput(out string) string {
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		return "nothing new – already up to date"
+	}
+	// Each fetched ref prints a line like " a1b2c3..d4e5f6  main -> origin/main"
+	// Count how many ref-update lines there are.
+	var updates int
+	for _, line := range strings.Split(trimmed, "\n") {
+		if strings.Contains(line, "->") {
+			updates++
+		}
+	}
+	if updates == 1 {
+		for _, line := range strings.Split(trimmed, "\n") {
+			if strings.Contains(line, "->") {
+				return "fetched: " + strings.TrimSpace(line)
+			}
+		}
+	}
+	if updates > 1 {
+		return fmt.Sprintf("fetched %d refs", updates)
+	}
+	return firstLine(trimmed)
 }
 
 func (m *BranchesPopup) setStatus(s string, isErr bool) {

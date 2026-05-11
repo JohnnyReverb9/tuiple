@@ -540,8 +540,9 @@ func (m Model) renderHeader() string {
 	size := theme.ListHeader.Width(8).Align(lipgloss.Right).Render("Size")
 	date := theme.ListHeader.Width(12).Render("Modified")
 	if m.hasGitState() {
-		// " " icon(1) " " name " " git(1) " " size " " date
-		return fmt.Sprintf("   %s   %s %s", name, size, date)
+		// Layout mirrors the data row: " " icon " " name " " S(1) " " size " " date
+		gitHdr := theme.ListHeader.Width(1).Render("S")
+		return fmt.Sprintf("   %s %s %s %s", name, gitHdr, size, date)
 	}
 	// " " icon(1) " " name " " size " " date
 	return fmt.Sprintf("   %s %s %s", name, size, date)

@@ -317,22 +317,22 @@ func RebaseOnto(repo, name string) error {
 	return err
 }
 
-// Push pushes the current branch to its upstream remote.
-func Push(repo string) error {
-	_, err := run(repo, "push")
-	return err
+// Push pushes the current branch to its upstream remote and returns the
+// combined stdout+stderr so callers can show a meaningful status message.
+func Push(repo string) (string, error) {
+	return runWithOutput(repo, "push")
 }
 
-// Pull pulls (fetch + merge) from the upstream remote.
-func Pull(repo string) error {
-	_, err := run(repo, "pull")
-	return err
+// Pull pulls (fetch + merge) from the upstream remote and returns combined
+// output for status reporting.
+func Pull(repo string) (string, error) {
+	return runWithOutput(repo, "pull")
 }
 
-// Fetch fetches from all remotes.
-func Fetch(repo string) error {
-	_, err := run(repo, "fetch", "--all")
-	return err
+// Fetch fetches from all remotes and returns combined output for status
+// reporting.
+func Fetch(repo string) (string, error) {
+	return runWithOutput(repo, "fetch", "--all", "--prune")
 }
 
 // StashShow returns the patch for a single stash entry (e.g. "stash@{0}").
