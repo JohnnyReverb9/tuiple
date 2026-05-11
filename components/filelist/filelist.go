@@ -200,9 +200,18 @@ func (m Model) visibleHeight() int {
 	return max(1, m.height-1) // reserve 1 for the column header
 }
 
+// hasGitState reports whether the list currently has git status data.
+func (m Model) hasGitState() bool {
+	return m.gitFileStat != nil
+}
+
 func (m Model) nameWidth() int {
-	// Layout: " " icon mark(1) " " name " " size(8) " " date(12) → fixed=26
-	return max(10, m.width-26)
+	if m.hasGitState() {
+		// Layout: " " icon(1) " " name " " git(1) " " size(8) " " date(12) → fixed=27
+		return max(10, m.width-27)
+	}
+	// Layout: " " icon(1) " " name " " size(8) " " date(12) → fixed=25
+	return max(10, m.width-25)
 }
 
 // renderGitMarker returns a 1-cell coloured marker character for the given
@@ -512,8 +521,12 @@ func (m Model) renderHeader() string {
 	name := theme.ListHeader.Width(nameW).Render("Name")
 	size := theme.ListHeader.Width(8).Align(lipgloss.Right).Render("Size")
 	date := theme.ListHeader.Width(12).Render("Modified")
-	// Layout: " icon mark name size date" → 3 leading cells before "Name"
-	return fmt.Sprintf("    %s %s %s", name, size, date)
+	if m.hasGitState() {
+		// " " icon(1) " " name " " git(1) " " size " " date
+		return fmt.Sprintf("   %s   %s %s", name, size, date)
+	}
+	// " " icon(1) " " name " " size " " date
+	return fmt.Sprintf("   %s %s %s", name, size, date)
 }
 
 func (m Model) renderEntry(idx int) string {
@@ -541,14 +554,29 @@ func (m Model) renderEntry(idx int) string {
 	// Date
 	dateStr := filesystem.FormatTime(entry.ModTime)
 
-	gitMark := m.renderGitMarker(entry)
+	// Icon with fixed 1-cell width
+	iconCell := lipgloss.NewStyle().Foreground(icon.Color).Width(1).MaxWidth(1).Render(icon.Symbol)
+
+	// Git marker on the right side (between name and size)
+	showGit := m.hasGitState()
+	var gitMark string
+	if showGit {
+		gitMark = m.renderGitMarker(entry)
+	}
+
+	// buildLine assembles: icon name [git] size date
+	buildLine := func(ic, nm, sz, dt string) string {
+		if showGit {
+			return fmt.Sprintf(" %s %s %s %s %s", ic, nm, gitMark, sz, dt)
+		}
+		return fmt.Sprintf(" %s %s %s %s", ic, nm, sz, dt)
+	}
 
 	// ── Selected row (solid background) ──────────────────────────────
 	if isSelected && m.focused {
 		displayName := truncate(name, nameW)
-		line := fmt.Sprintf(" %s %s %s %s %s",
-			icon.Symbol,
-			gitMark,
+		line := buildLine(
+			iconCell,
 			lipgloss.NewStyle().Width(nameW).Render(displayName),
 			lipgloss.NewStyle().Width(8).Align(lipgloss.Right).Render(sizeStr),
 			lipgloss.NewStyle().Width(12).Render(dateStr),
@@ -559,9 +587,8 @@ func (m Model) renderEntry(idx int) string {
 	// ── Unfocused cursor (subtle highlight) ──────────────────────────
 	if isSelected {
 		displayName := truncate(name, nameW)
-		line := fmt.Sprintf(" %s %s %s %s %s",
-			icon.Symbol,
-			gitMark,
+		line := buildLine(
+			iconCell,
 			lipgloss.NewStyle().Width(nameW).Render(displayName),
 			lipgloss.NewStyle().Width(8).Align(lipgloss.Right).Render(sizeStr),
 			lipgloss.NewStyle().Width(12).Render(dateStr),
@@ -587,19 +614,18 @@ func (m Model) renderEntry(idx int) string {
 		nameStyle = theme.FileName
 	}
 
-	iconStr := lipgloss.NewStyle().Foreground(icon.Color).Render(icon.Symbol)
 	nameStr := nameStyle.Width(nameW).MaxWidth(nameW).Render(name)
 	sizeRendered := theme.FileSize.Width(8).Align(lipgloss.Right).Render(sizeStr)
 
-	// Add visual indicator for marked (selected) rows if they aren't the primary selected cursor
+	// Visual indicator for marked (multi-selected) rows
 	if isMarked {
-		iconStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Render("✓")
+		iconCell = lipgloss.NewStyle().Foreground(theme.AccentYellow).Width(1).MaxWidth(1).Render("✓")
 		nameStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Width(nameW).MaxWidth(nameW).Render(name)
 	}
 
 	dateRendered := theme.FileDate.Width(12).Render(dateStr)
 
-	return fmt.Sprintf(" %s %s %s %s %s", iconStr, gitMark, nameStr, sizeRendered, dateRendered)
+	return buildLine(iconCell, nameStr, sizeRendered, dateRendered)
 }
 
 // ── String helpers ─────────────────────────────────────────────────────

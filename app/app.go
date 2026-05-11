@@ -1008,6 +1008,7 @@ func (m Model) renderHelp() string {
 			{"r", "Rename branch (prompts for new name)"},
 			{"d / D", "Delete (safe / force)"},
 			{"m / R", "Merge into current / Rebase onto"},
+			{"P / p / F", "Push / Pull / Fetch"},
 			{"/", "Filter branches by substring"},
 			{"Ctrl+R", "Reload list"},
 			{"Esc", "Close popup"},

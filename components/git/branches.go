@@ -276,6 +276,33 @@ func (m *BranchesPopup) doRebase() {
 	m.reload()
 }
 
+func (m *BranchesPopup) doPush() {
+	if err := Push(m.repo); err != nil {
+		m.setStatus(err.Error(), true)
+		return
+	}
+	m.setStatus("pushed successfully", false)
+	m.reload()
+}
+
+func (m *BranchesPopup) doPull() {
+	if err := Pull(m.repo); err != nil {
+		m.setStatus(err.Error(), true)
+		return
+	}
+	m.setStatus("pulled successfully", false)
+	m.reload()
+}
+
+func (m *BranchesPopup) doFetch() {
+	if err := Fetch(m.repo); err != nil {
+		m.setStatus(err.Error(), true)
+		return
+	}
+	m.setStatus("fetched all remotes", false)
+	m.reload()
+}
+
 func (m *BranchesPopup) setStatus(s string, isErr bool) {
 	m.status = s
 	m.statusErr = isErr
@@ -361,6 +388,15 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 		m.reload()
 		m.setStatus("reloaded", false)
 		return m, nil
+	case "P":
+		m.doPush()
+		return m, func() tea.Msg { return BranchesChangedMsg{} }
+	case "p":
+		m.doPull()
+		return m, func() tea.Msg { return BranchesChangedMsg{} }
+	case "F":
+		m.doFetch()
+		return m, func() tea.Msg { return BranchesChangedMsg{} }
 	}
 	return m, nil
 }
@@ -629,7 +665,7 @@ func (m BranchesPopup) renderStatus(w int) string {
 }
 
 func (m BranchesPopup) renderFooter(w int) string {
-	hint := " Enter checkout · n new · r rename · d/D delete · m merge · R rebase · / filter · Esc close "
+	hint := " Enter·checkout n·new r·rename d/D·del m·merge R·rebase P·push p·pull F·fetch Esc·close"
 	return lipgloss.NewStyle().
 		Foreground(theme.FgDimColor).
 		Background(theme.BgDarkColor).
