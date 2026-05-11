@@ -237,14 +237,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.refreshGit()
-		// Auto-refresh preview when the viewed file is modified on disk.
+		// Auto-refresh preview when the viewed file is modified on disk,
+		// or when the selected entry changed (e.g. the previewed file was deleted).
 		var previewCmd tea.Cmd
-		if m.previewLoadedPath != "" {
-			if entry := m.filelist.SelectedEntry(); entry != nil && !entry.IsDir && entry.Path == m.previewLoadedPath {
-				if info, err := os.Stat(entry.Path); err == nil && info.ModTime().After(m.previewFileMod) {
-					m.previewFileMod = info.ModTime()
-					previewCmd = m.preview.LoadFile(*entry)
-				}
+		if entry := m.filelist.SelectedEntry(); entry != nil && !entry.IsDir {
+			if entry.Path != m.previewLoadedPath {
+				// Cursor landed on a different file (e.g. after external deletion).
+				previewCmd = m.preview.LoadFile(*entry)
+				m.stampPreview(entry)
+			} else if info, err := os.Stat(entry.Path); err == nil && info.ModTime().After(m.previewFileMod) {
+				// Same file, but it was modified on disk.
+				m.previewFileMod = info.ModTime()
+				previewCmd = m.preview.LoadFile(*entry)
 			}
 		}
 		return m, tea.Batch(dirPollCmd(), previewCmd)
@@ -923,12 +927,16 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusMsg = fmt.Sprintf("Deleted %d item(s)", len(m.opEntries))
 					m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
 					m.filelist, _ = m.filelist.Update(filelist.ClearSelectionMsg{})
-					var cmd tea.Cmd
+					var cmds []tea.Cmd
+					if entry := m.filelist.SelectedEntry(); entry != nil {
+						cmds = append(cmds, m.preview.LoadFile(*entry))
+						m.stampPreview(entry)
+					}
 					if ActiveDeletesCount() > 0 && !m.deletesTicking {
 						m.deletesTicking = true
-						cmd = deleteTick()
+						cmds = append(cmds, deleteTick())
 					}
-					return m, cmd
+					return m, tea.Batch(cmds...)
 				}
 				return m, nil
 			} else if msg.String() == "n" || msg.String() == "N" {
