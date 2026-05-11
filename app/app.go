@@ -956,7 +956,7 @@ func (m Model) renderHelp() string {
 
 	leftCats := []helpCat{
 		{"Navigation", []helpItem{
-			{"↑ ↓  or  k j", "Move up / down"},
+			{"↑ ↓  /  k j", "Move up / down"},
 			{"Enter / → / l", "Enter dir / Open file"},
 			{"Backspace / ← / h", "Go back to parent"},
 			{"g / G", "Go to top / bottom"},
@@ -976,7 +976,7 @@ func (m Model) renderHelp() string {
 			{"f", "Search file by name (Fuzzy)"},
 			{"F", "Search in file contents"},
 			{"/", "Live list filter"},
-			{"'", "(Un)Bookmark current path to Favorites"},
+			{"'", "(Un)Bookmark to Favorites"},
 		}},
 		{"Audio Player", []helpItem{
 			{"l / Enter", "Play / Pause current  audio file"},
@@ -1002,7 +1002,7 @@ func (m Model) renderHelp() string {
 			{"Esc", "Close Git panel"},
 		}},
 		{"Branches popup", []helpItem{
-			{"↑ ↓  or  k j", "Move through branches"},
+			{"↑ ↓  /  k j", "Move through branches"},
 			{"Enter / l", "Checkout (creates tracking if remote)"},
 			{"n", "New branch from HEAD (prompts for name)"},
 			{"r", "Rename branch (prompts for new name)"},
@@ -1013,7 +1013,7 @@ func (m Model) renderHelp() string {
 			{"Esc", "Close popup"},
 		}},
 		{"Commit tab", []helpItem{
-			{"↑ ↓  or  k j", "Move through changes"},
+			{"↑ ↓  /  k j", "Move through changes"},
 			{"Space", "Stage / unstage file under cursor"},
 			{"a / A", "Stage all / Unstage all"},
 			{"r", "Reload status"},
@@ -1022,14 +1022,14 @@ func (m Model) renderHelp() string {
 			{"Ctrl+S", "Commit staged files with message"},
 		}},
 		{"Log tab", []helpItem{
-			{"↑ ↓  or  k j", "Move through commits"},
+			{"↑ ↓  /  k j", "Move through commits"},
 			{"r", "Reload log"},
 			{"c", "Cherry-pick commit onto current branch"},
 			{"v", "Revert commit (creates a new commit)"},
 			{"b", "Create branch from commit (asks for name)"},
 		}},
 		{"Stashes tab", []helpItem{
-			{"↑ ↓  or  k j", "Move through stashes"},
+			{"↑ ↓  /  k j", "Move through stashes"},
 			{"a", "Apply (keep the stash on the list)"},
 			{"p", "Pop (apply and remove)"},
 			{"D", "Drop selected stash"},
