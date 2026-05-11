@@ -990,6 +990,27 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// uniqueDst returns dst unchanged when the path does not exist.
+// If dst already exists it inserts _1, _2, … before the extension (for
+// files) or at the end (for directories) until an unused path is found.
+func uniqueDst(dst string, isDir bool) string {
+	if _, err := os.Stat(dst); os.IsNotExist(err) {
+		return dst
+	}
+	base := dst
+	ext := ""
+	if !isDir {
+		ext = filepath.Ext(dst)
+		base = strings.TrimSuffix(dst, ext)
+	}
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+}
+
 func (m Model) handlePaste(items []clipboard.Item, op clipboard.OpType) (tea.Model, tea.Cmd) {
 	var itemsDone []HistoryItem
 	var opType OpType
@@ -1001,6 +1022,9 @@ func (m Model) handlePaste(items []clipboard.Item, op clipboard.OpType) (tea.Mod
 
 	for _, item := range items {
 		dst := filepath.Join(m.currentPath, item.Entry.Name)
+		if op == clipboard.OpCopy {
+			dst = uniqueDst(dst, item.Entry.IsDir)
+		}
 		var err error
 		if op == clipboard.OpCut {
 			err = filesystem.Move(item.Entry.Path, dst)
