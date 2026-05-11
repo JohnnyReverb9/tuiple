@@ -1,0 +1,221 @@
+package git
+
+import (
+	"strconv"
+	"strings"
+)
+
+// ── Types ──────────────────────────────────────────────────────────────
+
+// FileChange represents a single entry from `git status --porcelain=v1`.
+//
+// IndexStatus is the staged half of the two-letter porcelain code, and
+// WorktreeStatus is the unstaged half. Either may be ' ' (clean).
+// '?' on both halves means untracked; '!' means ignored.
+type FileChange struct {
+	Path           string
+	OldPath        string // populated for renames/copies
+	IndexStatus    byte
+	WorktreeStatus byte
+}
+
+// Staged reports whether the change has any staged component.
+func (c FileChange) Staged() bool {
+	return c.IndexStatus != ' ' && c.IndexStatus != '?'
+}
+
+// Unstaged reports whether the change has any worktree-only component.
+func (c FileChange) Unstaged() bool {
+	return c.WorktreeStatus != ' '
+}
+
+// Untracked reports whether the file is untracked.
+func (c FileChange) Untracked() bool {
+	return c.IndexStatus == '?' && c.WorktreeStatus == '?'
+}
+
+// Commit is a single entry from `git log`.
+type Commit struct {
+	Hash     string
+	ShortSHA string
+	Author   string
+	RelDate  string
+	Subject  string
+}
+
+// Stash is a single entry from `git stash list`.
+type Stash struct {
+	Index   int    // 0 == stash@{0}
+	Ref     string // e.g. "stash@{0}"
+	Subject string
+}
+
+// TrackingInfo holds ahead/behind counts vs. the upstream branch.
+type TrackingInfo struct {
+	Upstream string
+	Ahead    int
+	Behind   int
+}
+
+// ── Queries ────────────────────────────────────────────────────────────
+
+// FindRoot returns the repository top-level for path, or ErrNotARepo.
+func FindRoot(path string) (string, error) {
+	return run(path, "rev-parse", "--show-toplevel")
+}
+
+// CurrentBranch returns the current branch name, or "HEAD" if detached.
+func CurrentBranch(repo string) (string, error) {
+	out, err := run(repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// Tracking returns upstream / ahead / behind for the current branch.
+// If there is no upstream configured the returned Upstream is empty and
+// counts are zero (no error).
+func Tracking(repo string) (TrackingInfo, error) {
+	upstream, err := run(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if err != nil {
+		// No upstream is not a hard error.
+		return TrackingInfo{}, nil
+	}
+	counts, err := run(repo, "rev-list", "--left-right", "--count", "HEAD..."+upstream)
+	if err != nil {
+		return TrackingInfo{Upstream: upstream}, nil
+	}
+	parts := strings.Fields(counts)
+	info := TrackingInfo{Upstream: upstream}
+	if len(parts) == 2 {
+		info.Ahead, _ = strconv.Atoi(parts[0])
+		info.Behind, _ = strconv.Atoi(parts[1])
+	}
+	return info, nil
+}
+
+// Status parses `git status --porcelain=v1` into FileChange entries.
+func Status(repo string) ([]FileChange, error) {
+	out, err := run(repo, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+
+	var changes []FileChange
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		c := FileChange{
+			IndexStatus:    line[0],
+			WorktreeStatus: line[1],
+		}
+		rest := line[3:]
+		if c.IndexStatus == 'R' || c.IndexStatus == 'C' {
+			// Format: "old -> new"
+			if i := strings.Index(rest, " -> "); i >= 0 {
+				c.OldPath = rest[:i]
+				c.Path = rest[i+4:]
+			} else {
+				c.Path = rest
+			}
+		} else {
+			c.Path = rest
+		}
+		changes = append(changes, c)
+	}
+	return changes, nil
+}
+
+// Diff returns the diff for a single path. If staged is true the diff is
+// taken against the index (i.e. what is staged for commit); otherwise it
+// is the working-tree diff.
+//
+// For untracked files git would normally emit nothing, so we fall back to
+// `git diff --no-index /dev/null <path>` style output by treating the file
+// as fully added.
+func Diff(repo, path string, staged bool) (string, error) {
+	args := []string{"diff", "--no-color"}
+	if staged {
+		args = append(args, "--cached")
+	}
+	args = append(args, "--", path)
+	out, err := run(repo, args...)
+	return out, err
+}
+
+// DiffUntracked returns a synthetic "all-added" diff for an untracked file.
+func DiffUntracked(repo, path string) (string, error) {
+	// /dev/null is portable on Unix; on Windows users would need NUL.
+	// tuiple is primarily a unix TUI so this is acceptable for now.
+	out, err := run(repo, "diff", "--no-color", "--no-index", "--", "/dev/null", path)
+	// git diff --no-index exits 1 when files differ, which is the normal case.
+	if err != nil && out != "" {
+		err = nil
+	}
+	return out, err
+}
+
+// Log returns the most recent `limit` commits on the current branch.
+func Log(repo string, limit int) ([]Commit, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	format := "%H%x00%h%x00%an%x00%ar%x00%s"
+	out, err := run(repo, "log",
+		"--no-color",
+		"-n", strconv.Itoa(limit),
+		"--format="+format,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+
+	var commits []Commit
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "\x00", 5)
+		if len(parts) < 5 {
+			continue
+		}
+		commits = append(commits, Commit{
+			Hash:     parts[0],
+			ShortSHA: parts[1],
+			Author:   parts[2],
+			RelDate:  parts[3],
+			Subject:  parts[4],
+		})
+	}
+	return commits, nil
+}
+
+// Stashes returns the stash list.
+func Stashes(repo string) ([]Stash, error) {
+	out, err := run(repo, "stash", "list", "--format=%gd%x00%gs")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+
+	var stashes []Stash
+	for i, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "\x00", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		stashes = append(stashes, Stash{
+			Index:   i,
+			Ref:     parts[0],
+			Subject: parts[1],
+		})
+	}
+	return stashes, nil
+}

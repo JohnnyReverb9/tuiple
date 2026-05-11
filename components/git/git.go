@@ -7,6 +7,8 @@
 package git
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,6 +34,11 @@ type Model struct {
 	tab      Tab
 	repoPath string
 
+	root     string
+	branch   string
+	tracking TrackingInfo
+	loadErr  error
+
 	width  int
 	height int
 }
@@ -47,11 +54,28 @@ func (m *Model) SetSize(w, h int) { m.width = w; m.height = h }
 // IsActive reports whether the overlay is currently visible.
 func (m Model) IsActive() bool { return m.active }
 
-// Start opens the overlay rooted at the given repo / working path.
+// Start opens the overlay rooted at the given working path. The repo
+// root, current branch, and upstream tracking are probed synchronously
+// (each is a single `git` invocation and completes in a few ms).
 func (m *Model) Start(repoPath string) tea.Cmd {
 	m.active = true
 	m.tab = TabCommit
 	m.repoPath = repoPath
+	m.root = ""
+	m.branch = ""
+	m.tracking = TrackingInfo{}
+	m.loadErr = nil
+
+	root, err := FindRoot(repoPath)
+	if err != nil {
+		m.loadErr = err
+		return nil
+	}
+	m.root = root
+	if branch, err := CurrentBranch(root); err == nil {
+		m.branch = branch
+	}
+	m.tracking, _ = Tracking(root)
 	return nil
 }
 
@@ -119,16 +143,27 @@ func (m Model) View() string {
 // ── Rendering helpers ──────────────────────────────────────────────────
 
 func (m Model) renderHeader(w int) string {
-	title := "  Git "
-	if m.repoPath != "" {
-		title += theme.Dim.Render("· " + m.repoPath)
-	}
-	return lipgloss.NewStyle().
+	headerStyle := lipgloss.NewStyle().
 		Background(theme.AccentGreen).
 		Foreground(theme.BgColor).
 		Bold(true).
-		Width(w).
-		Render(title)
+		Width(w)
+
+	left := "  Git"
+	if m.branch != "" {
+		left += "  " + m.branch
+	}
+
+	right := ""
+	if m.tracking.Ahead > 0 || m.tracking.Behind > 0 {
+		right = fmt.Sprintf("↑%d ↓%d ", m.tracking.Ahead, m.tracking.Behind)
+	}
+
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return headerStyle.Render(left + strings.Repeat(" ", gap) + right)
 }
 
 func (m Model) renderTabs(w int) string {
@@ -159,13 +194,22 @@ func (m Model) renderBody(w, h int) string {
 	}
 
 	var content string
-	switch m.tab {
-	case TabCommit:
-		content = m.renderCommitTab()
-	case TabLog:
-		content = m.renderLogTab()
-	case TabStashes:
-		content = m.renderStashesTab()
+	switch {
+	case errors.Is(m.loadErr, ErrNotARepo):
+		content = "\n" +
+			theme.ErrorMsg.Render("  Not inside a git repository.") + "\n" +
+			theme.Dim.Render("  Open the panel from a directory that is tracked by git.") + "\n"
+	case m.loadErr != nil:
+		content = "\n" + theme.ErrorMsg.Render("  "+m.loadErr.Error()) + "\n"
+	default:
+		switch m.tab {
+		case TabCommit:
+			content = m.renderCommitTab()
+		case TabLog:
+			content = m.renderLogTab()
+		case TabStashes:
+			content = m.renderStashesTab()
+		}
 	}
 
 	// Pad to fixed height so the box doesn't jump as content changes.
