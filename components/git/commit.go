@@ -591,7 +591,12 @@ func renderDiffLine(raw string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	truncated := truncatePlain(raw, w)
+	// Expand tabs to 4 spaces so lipgloss.Width() correctly measures the
+	// visible line length before truncation. Without this, a \t counts as
+	// 1 cell but renders as 4-8, causing the line to overflow the pane and
+	// bleed into the adjacent panel.
+	expanded := strings.ReplaceAll(raw, "\t", "    ")
+	truncated := truncatePlain(expanded, w)
 	colored := colorizeDiffLine(truncated)
 	pad := w - lipgloss.Width(colored)
 	if pad < 0 {

@@ -231,6 +231,24 @@ func (m Model) renderGitMarker(entry filesystem.FileEntry) string {
 	return lipgloss.NewStyle().Foreground(col).Bold(true).Render(string(ch))
 }
 
+// gitMarkerInfo returns the display character and foreground colour for a git
+// marker without rendering it, so callers can compose the background themselves
+// (e.g. cursor rows need BgSelected applied to each segment).
+func (m Model) gitMarkerInfo(entry filesystem.FileEntry) (string, lipgloss.TerminalColor) {
+	if entry.IsDir {
+		if _, ok := m.gitDirHas[entry.Path]; ok {
+			return "●", theme.AccentMagenta
+		}
+		return " ", theme.FgDimColor
+	}
+	code, ok := m.gitFileStat[entry.Path]
+	if !ok {
+		return " ", theme.FgDimColor
+	}
+	ch, col := gitMarkerChar(code)
+	return string(ch), col
+}
+
 func gitMarkerChar(code string) (rune, lipgloss.TerminalColor) {
 	if len(code) < 2 {
 		return ' ', theme.FgDimColor
@@ -572,31 +590,43 @@ func (m Model) renderEntry(idx int) string {
 		return fmt.Sprintf(" %s %s %s %s", ic, nm, sz, dt)
 	}
 
-	// ── Selected row (solid background) ──────────────────────────────
+	// ── Selected row (solid background, per-segment) ─────────────────
+	// We apply the background to every segment individually so that inner
+	// ANSI foreground codes are not reset by an outer Render() wrapper, and
+	// MaxWidth is never needed (the math guarantees exactly m.width cells).
 	if isSelected && m.focused {
-		displayName := truncate(name, nameW)
-		line := buildLine(
-			iconCell,
-			lipgloss.NewStyle().Width(nameW).Render(displayName),
-			lipgloss.NewStyle().Width(8).Align(lipgloss.Right).Render(sizeStr),
-			lipgloss.NewStyle().Width(12).Render(dateStr),
-		)
-		return theme.ListCursor.Width(m.width).MaxWidth(m.width).Render(line)
+		applyBg := func(s lipgloss.Style) lipgloss.Style {
+			return s.Background(theme.BgSelected).Bold(true)
+		}
+		sp := applyBg(lipgloss.NewStyle()).Render(" ")
+		iconStr := applyBg(lipgloss.NewStyle().Foreground(icon.Color)).Width(1).MaxWidth(1).Render(icon.Symbol)
+		nameStr := applyBg(lipgloss.NewStyle()).Width(nameW).Render(truncate(name, nameW))
+		sizeRend := applyBg(lipgloss.NewStyle()).Width(8).Align(lipgloss.Right).Render(sizeStr)
+		dateRend := applyBg(lipgloss.NewStyle()).Width(12).Render(dateStr)
+		if showGit {
+			ch, col := m.gitMarkerInfo(entry)
+			markStr := applyBg(lipgloss.NewStyle().Foreground(col)).Bold(true).Render(ch)
+			return sp + iconStr + sp + nameStr + sp + markStr + sp + sizeRend + sp + dateRend
+		}
+		return sp + iconStr + sp + nameStr + sp + sizeRend + sp + dateRend
 	}
 
-	// ── Unfocused cursor (subtle highlight) ──────────────────────────
+	// ── Unfocused cursor (subtle highlight, per-segment) ──────────────
 	if isSelected {
-		displayName := truncate(name, nameW)
-		line := buildLine(
-			iconCell,
-			lipgloss.NewStyle().Width(nameW).Render(displayName),
-			lipgloss.NewStyle().Width(8).Align(lipgloss.Right).Render(sizeStr),
-			lipgloss.NewStyle().Width(12).Render(dateStr),
-		)
-		return lipgloss.NewStyle().
-			Background(theme.BgHighlight).
-			Foreground(theme.FgColor).
-			Width(m.width).MaxWidth(m.width).Render(line)
+		applyBg := func(s lipgloss.Style) lipgloss.Style {
+			return s.Background(theme.BgHighlight).Foreground(theme.FgColor)
+		}
+		sp := applyBg(lipgloss.NewStyle()).Render(" ")
+		iconStr := applyBg(lipgloss.NewStyle().Foreground(icon.Color)).Width(1).MaxWidth(1).Render(icon.Symbol)
+		nameStr := applyBg(lipgloss.NewStyle()).Width(nameW).Render(truncate(name, nameW))
+		sizeRend := applyBg(lipgloss.NewStyle()).Width(8).Align(lipgloss.Right).Render(sizeStr)
+		dateRend := applyBg(lipgloss.NewStyle()).Width(12).Render(dateStr)
+		if showGit {
+			ch, col := m.gitMarkerInfo(entry)
+			markStr := applyBg(lipgloss.NewStyle().Foreground(col)).Bold(true).Render(ch)
+			return sp + iconStr + sp + nameStr + sp + markStr + sp + sizeRend + sp + dateRend
+		}
+		return sp + iconStr + sp + nameStr + sp + sizeRend + sp + dateRend
 	}
 
 	// ── Normal row (per-element colors) ──────────────────────────────
