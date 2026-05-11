@@ -17,6 +17,7 @@ import (
 	"tuiple/bookmarks"
 	"tuiple/clipboard"
 	"tuiple/components/filelist"
+	"tuiple/components/git"
 	"tuiple/components/preview"
 	"tuiple/components/preview/mediarender"
 	"tuiple/components/search"
@@ -83,6 +84,7 @@ type Model struct {
 	statusMsg  string
 
 	searchOverlay    search.Model
+	gitOverlay       git.Model
 	awaitingSort     bool
 
 	active      panel
@@ -119,6 +121,7 @@ func New(startDir string) Model {
 		preview:       preview.New(),
 		textInput:     ti,
 		searchOverlay: search.New(),
+		gitOverlay:    git.New(),
 		active:        panelFileList,
 		currentPath:   startDir,
 		lastDirMod: lastMod,
@@ -155,6 +158,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, dirPollCmd()
+	}
+
+	// ── Intercept Git Overlay ──────────────────────────────────────
+	if m.gitOverlay.IsActive() {
+		var cmd tea.Cmd
+		m.gitOverlay, cmd = m.gitOverlay.Update(msg)
+		return m, cmd
 	}
 
 	// ── Intercept Search Overlay ───────────────────────────────────
@@ -276,6 +286,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.searchOverlay.Start(search.ModeNameSearch, m.currentPath)
 		case "F":
 			return m, m.searchOverlay.Start(search.ModeContentSearch, m.currentPath)
+		case "ctrl+g":
+			return m, m.gitOverlay.Start(m.currentPath)
 		case "'":
 			added, err := bookmarks.Toggle(m.currentPath)
 			if err != nil {
@@ -562,6 +574,13 @@ func (m Model) View() string {
 	if m.searchOverlay.IsActive() {
 		m.searchOverlay.SetSize(m.width/2, contentH)
 		overlay := m.searchOverlay.View()
+		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+	}
+
+	// Git Overlay
+	if m.gitOverlay.IsActive() {
+		m.gitOverlay.SetSize(m.width*4/5, contentH)
+		overlay := m.gitOverlay.View()
 		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
 	}
 
@@ -870,6 +889,12 @@ func (m Model) renderHelp() string {
 			{"F", "Search in file contents"},
 			{"/", "Live list filter"},
 			{"'", "(Un)Bookmark current path to Favorites"},
+		}},
+		{"Git", []struct{ key, desc string }{
+			{"Ctrl+G", "Open Git panel (Commit / Log / Stashes)"},
+			{"Tab / Shift+Tab", "Switch tab inside Git panel"},
+			{"1 / 2 / 3", "Jump to a Git tab directly"},
+			{"Esc", "Close Git panel"},
 		}},
 		{"Audio Player", []struct{ key, desc string }{
 			{"l", "Play / Pause audio"},
