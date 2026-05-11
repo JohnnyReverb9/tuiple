@@ -39,13 +39,21 @@ type Model struct {
 	tracking TrackingInfo
 	loadErr  error
 
+	commit commitTab
+	log    logTab
+	stash  stashTab
+
 	width  int
 	height int
 }
 
 // New creates a new Git overlay model.
 func New() Model {
-	return Model{}
+	return Model{
+		commit: newCommitTab(),
+		log:    newLogTab(),
+		stash:  newStashTab(),
+	}
 }
 
 // SetSize sets the overlay viewport size.
@@ -76,18 +84,45 @@ func (m *Model) Start(repoPath string) tea.Cmd {
 		m.branch = branch
 	}
 	m.tracking, _ = Tracking(root)
+	m.commit.status = ""
+	m.commit.statusErr = false
+	m.log.status = ""
+	m.log.statusErr = false
+	m.stash.status = ""
+	m.stash.statusErr = false
+	m.reloadCommit()
+	m.reloadLog()
+	m.reloadStashes()
 	return nil
 }
 
 // Stop closes the overlay.
 func (m *Model) Stop() { m.active = false }
 
-// Update handles overlay-level input: tab switching and close.
-// Per-tab updates will be dispatched from here once each tab has its
-// own interactive content.
+// Update handles overlay-level input. Tab-specific handlers get the first
+// chance to consume the message; if they decline, fallback handling
+// (tab cycling, number jumps, close) runs.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if !m.active {
 		return m, nil
+	}
+
+	if m.loadErr == nil {
+		var (
+			cmd     tea.Cmd
+			handled bool
+		)
+		switch m.tab {
+		case TabCommit:
+			m, cmd, handled = m.updateCommit(msg)
+		case TabLog:
+			m, cmd, handled = m.updateLog(msg)
+		case TabStashes:
+			m, cmd, handled = m.updateStashes(msg)
+		}
+		if handled {
+			return m, cmd
+		}
 	}
 
 	switch msg := msg.(type) {
@@ -204,11 +239,11 @@ func (m Model) renderBody(w, h int) string {
 	default:
 		switch m.tab {
 		case TabCommit:
-			content = m.renderCommitTab()
+			content = m.renderCommitTab(w, h)
 		case TabLog:
-			content = m.renderLogTab()
+			content = m.renderLogTab(w, h)
 		case TabStashes:
-			content = m.renderStashesTab()
+			content = m.renderStashesTab(w, h)
 		}
 	}
 
@@ -221,24 +256,6 @@ func (m Model) renderBody(w, h int) string {
 		lines = lines[:h]
 	}
 	return strings.Join(lines, "\n")
-}
-
-func (m Model) renderCommitTab() string {
-	return "\n" +
-		theme.Dim.Render("  Changes will appear here.") + "\n" +
-		theme.Dim.Render("  (stage / unstage / write message / commit)") + "\n"
-}
-
-func (m Model) renderLogTab() string {
-	return "\n" +
-		theme.Dim.Render("  Commit history will appear here.") + "\n" +
-		theme.Dim.Render("  (cherry-pick / reset / branch from commit / revert)") + "\n"
-}
-
-func (m Model) renderStashesTab() string {
-	return "\n" +
-		theme.Dim.Render("  Stashes will appear here.") + "\n" +
-		theme.Dim.Render("  (apply / pop / drop)") + "\n"
 }
 
 func (m Model) renderFooter(w int) string {

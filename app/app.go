@@ -48,6 +48,53 @@ func (m *Model) updateLastDirMod(path string) {
 	}
 }
 
+// refreshGit re-probes the git repo root, current branch, and porcelain
+// status, then pushes the file-level and directory-level markers into
+// the filelist component. Safe to call from any directory: when the path
+// is not inside a repo all git state is cleared.
+func (m *Model) refreshGit() {
+	root, err := git.FindRoot(m.currentPath)
+	if err != nil {
+		m.gitRoot = ""
+		m.gitBranch = ""
+		m.gitFileStat = nil
+		m.gitDirHas = nil
+		m.filelist.SetGitState(nil, nil)
+		return
+	}
+	m.gitRoot = root
+	if br, err := git.CurrentBranch(root); err == nil {
+		m.gitBranch = br
+	} else {
+		m.gitBranch = ""
+	}
+	changes, _ := git.Status(root)
+	fileStat := make(map[string]string, len(changes))
+	dirHas := make(map[string]struct{}, len(changes))
+	for _, c := range changes {
+		abs := filepath.Join(root, c.Path)
+		fileStat[abs] = string(c.IndexStatus) + string(c.WorktreeStatus)
+		parent := filepath.Dir(abs)
+		for {
+			if parent == root || parent == "/" || parent == "." || parent == "" {
+				break
+			}
+			if !strings.HasPrefix(parent, root) {
+				break
+			}
+			dirHas[parent] = struct{}{}
+			next := filepath.Dir(parent)
+			if next == parent {
+				break
+			}
+			parent = next
+		}
+	}
+	m.gitFileStat = fileStat
+	m.gitDirHas = dirHas
+	m.filelist.SetGitState(fileStat, dirHas)
+}
+
 // ── Dialog / State ─────────────────────────────────────────────────────
 
 type DialogMode int
@@ -83,9 +130,15 @@ type Model struct {
 	opEntries  []filesystem.FileEntry
 	statusMsg  string
 
-	searchOverlay    search.Model
-	gitOverlay       git.Model
-	awaitingSort     bool
+	searchOverlay search.Model
+	gitOverlay    git.Model
+	branchesPopup git.BranchesPopup
+	awaitingSort  bool
+
+	gitRoot     string
+	gitBranch   string
+	gitFileStat map[string]string
+	gitDirHas   map[string]struct{}
 
 	active      panel
 	currentPath string
@@ -122,9 +175,10 @@ func New(startDir string) Model {
 		textInput:     ti,
 		searchOverlay: search.New(),
 		gitOverlay:    git.New(),
+		branchesPopup: git.NewBranches(),
 		active:        panelFileList,
 		currentPath:   startDir,
-		lastDirMod: lastMod,
+		lastDirMod:    lastMod,
 	}
 }
 
@@ -157,7 +211,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.filelist, _ = m.filelist.Update(filelist.RefreshListMsg{})
 			}
 		}
+		m.refreshGit()
 		return m, dirPollCmd()
+	}
+
+	if _, ok := msg.(git.BranchesChangedMsg); ok {
+		m.refreshGit()
+		return m, nil
+	}
+
+	// ── Intercept Branches Popup ───────────────────────────────────
+	if m.branchesPopup.IsActive() {
+		var cmd tea.Cmd
+		m.branchesPopup, cmd = m.branchesPopup.Update(msg)
+		return m, cmd
 	}
 
 	// ── Intercept Git Overlay ──────────────────────────────────────
@@ -234,6 +301,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.updateSizes()
+		if !m.ready {
+			m.refreshGit()
+		}
 		m.ready = true
 
 		if entry := m.filelist.SelectedEntry(); entry != nil {
@@ -288,6 +358,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.searchOverlay.Start(search.ModeContentSearch, m.currentPath)
 		case "ctrl+g":
 			return m, m.gitOverlay.Start(m.currentPath)
+		case "b":
+			return m, m.branchesPopup.Start(m.currentPath)
 		case "'":
 			added, err := bookmarks.Toggle(m.currentPath)
 			if err != nil {
@@ -477,6 +549,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.filelist, cmd = m.filelist.NavigateTo(msg.Path)
 		cmds = append(cmds, cmd)
+		m.refreshGit()
 		if entry := m.filelist.SelectedEntry(); entry != nil {
 			cmds = append(cmds, m.preview.LoadFile(*entry))
 		}
@@ -485,6 +558,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── Dir changed in file list ───────────────────────────────────
 	case filelist.DirChangedMsg:
 		m.currentPath = msg.Path
+		m.refreshGit()
 		if entry := m.filelist.SelectedEntry(); entry != nil {
 			cmds = append(cmds, m.preview.LoadFile(*entry))
 		}
@@ -581,6 +655,13 @@ func (m Model) View() string {
 	if m.gitOverlay.IsActive() {
 		m.gitOverlay.SetSize(m.width*4/5, contentH)
 		overlay := m.gitOverlay.View()
+		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+	}
+
+	// Branches Popup
+	if m.branchesPopup.IsActive() {
+		m.branchesPopup.SetSize(m.width*3/5, contentH*3/4)
+		overlay := m.branchesPopup.View()
 		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
 	}
 
@@ -843,6 +924,10 @@ func (m Model) renderStatusBar() string {
 	}
 
 	left := theme.StatusPath.Render(leftStr)
+	if m.gitBranch != "" {
+		branchStyle := lipgloss.NewStyle().Foreground(theme.AccentGreen).Bold(true)
+		left += "  " + branchStyle.Render(" "+m.gitBranch)
+	}
 
 	entryCount := len(m.filelist.Entries())
 	info := fmt.Sprintf("%d items", entryCount)
@@ -863,20 +948,23 @@ func (m Model) renderStatusBar() string {
 // ── Help screen ────────────────────────────────────────────────────────
 
 func (m Model) renderHelp() string {
-	categories := []struct {
+	type helpItem struct{ key, desc string }
+	type helpCat struct {
 		title string
-		items []struct{ key, desc string }
-	}{
-		{"Navigation", []struct{ key, desc string }{
-			{"↑, ↓", "Move up / down"},
-			{"Enter / →", "Enter dir / Open file"},
-			{"Backspace / ←", "Go back to parent"},
+		items []helpItem
+	}
+
+	leftCats := []helpCat{
+		{"Navigation", []helpItem{
+			{"↑ ↓  or  k j", "Move up / down"},
+			{"Enter / → / l", "Enter dir / Open file"},
+			{"Backspace / ← / h", "Go back to parent"},
 			{"g / G", "Go to top / bottom"},
 			{"Ctrl+U / Ctrl+D", "Page up / down"},
 			{"~", "Go to home directory"},
 			{"Tab / Shift+Tab", "Switch active panel"},
 		}},
-		{"File Operations", []struct{ key, desc string }{
+		{"File Operations", []helpItem{
 			{"Space", "Toggle selection (Multi-select)"},
 			{"Esc", "Clear all selections"},
 			{"c / x / p", "Copy / Cut / Paste"},
@@ -884,24 +972,18 @@ func (m Model) renderHelp() string {
 			{"r", "Rename"},
 			{"n / N", "New File / New Directory"},
 		}},
-		{"Search & Bookmarks", []struct{ key, desc string }{
+		{"Search & Bookmarks", []helpItem{
 			{"f", "Search file by name (Fuzzy)"},
 			{"F", "Search in file contents"},
 			{"/", "Live list filter"},
 			{"'", "(Un)Bookmark current path to Favorites"},
 		}},
-		{"Git", []struct{ key, desc string }{
-			{"Ctrl+G", "Open Git panel (Commit / Log / Stashes)"},
-			{"Tab / Shift+Tab", "Switch tab inside Git panel"},
-			{"1 / 2 / 3", "Jump to a Git tab directly"},
-			{"Esc", "Close Git panel"},
-		}},
-		{"Audio Player", []struct{ key, desc string }{
-			{"l", "Play / Pause audio"},
+		{"Audio Player", []helpItem{
+			{"l / Enter", "Play / Pause current  audio file"},
 			{"- / =", "Seek ±5 seconds"},
 			{"_ / +", "Seek ±30 seconds"},
 		}},
-		{"System & Options", []struct{ key, desc string }{
+		{"System & Options", []helpItem{
 			{".", "Toggle hidden files"},
 			{"o n / o s / o d", "Sort by: Name / Size / Date"},
 			{"u / U", "Undo / Redo file operation"},
@@ -911,24 +993,94 @@ func (m Model) renderHelp() string {
 		}},
 	}
 
-	var lines []string
-	lines = append(lines, "")
-	lines = append(lines, theme.PreviewTitle.Render("  ⌨  Tuiple — Keyboard Shortcuts"))
-	lines = append(lines, "")
-
-	for _, cat := range categories {
-		lines = append(lines, theme.ListHeader.Render("  "+cat.title))
-		for _, it := range cat.items {
-			key := theme.HelpKey.Width(24).Render("    " + it.key)
-			desc := theme.HelpDesc.Render(it.desc)
-			lines = append(lines, key+" "+desc)
-		}
-		lines = append(lines, "")
+	rightCats := []helpCat{
+		{"Git Panel", []helpItem{
+			{"Ctrl+G", "Open / close Git panel"},
+			{"b", "Open Branches popup"},
+			{"Tab / Shift+Tab", "Switch tab (Commit / Log / Stashes)"},
+			{"1 / 2 / 3", "Jump to a tab directly"},
+			{"Esc", "Close Git panel"},
+		}},
+		{"Branches popup", []helpItem{
+			{"↑ ↓  or  k j", "Move through branches"},
+			{"Enter / l", "Checkout (creates tracking if remote)"},
+			{"n", "New branch from HEAD (prompts for name)"},
+			{"r", "Rename branch (prompts for new name)"},
+			{"d / D", "Delete (safe / force)"},
+			{"m / R", "Merge into current / Rebase onto"},
+			{"/", "Filter branches by substring"},
+			{"Ctrl+R", "Reload list"},
+			{"Esc", "Close popup"},
+		}},
+		{"Commit tab", []helpItem{
+			{"↑ ↓  or  k j", "Move through changes"},
+			{"Space", "Stage / unstage file under cursor"},
+			{"a / A", "Stage all / Unstage all"},
+			{"r", "Reload status"},
+			{"i", "Focus commit message (Esc to leave)"},
+			{"s", "Stash working tree (asks for message)"},
+			{"Ctrl+S", "Commit staged files with message"},
+		}},
+		{"Log tab", []helpItem{
+			{"↑ ↓  or  k j", "Move through commits"},
+			{"r", "Reload log"},
+			{"c", "Cherry-pick commit onto current branch"},
+			{"v", "Revert commit (creates a new commit)"},
+			{"b", "Create branch from commit (asks for name)"},
+		}},
+		{"Stashes tab", []helpItem{
+			{"↑ ↓  or  k j", "Move through stashes"},
+			{"a", "Apply (keep the stash on the list)"},
+			{"p", "Pop (apply and remove)"},
+			{"D", "Drop selected stash"},
+			{"r", "Reload stash list"},
+		}},
+		{"Diff scrolling", []helpItem{
+			{"Ctrl+D / PgDn", "Scroll diff half-page down"},
+			{"Ctrl+U / PgUp", "Scroll diff half-page up"},
+			{"Home / End", "Jump to top / bottom of diff"},
+		}},
 	}
 
-	lines = append(lines, theme.Dim.Render("  Press ? to close"))
+	renderCol := func(cats []helpCat, keyW int) []string {
+		var out []string
+		for _, c := range cats {
+			out = append(out, theme.ListHeader.Render("  "+c.title))
+			for _, it := range c.items {
+				key := theme.HelpKey.Width(keyW).Render("    " + it.key)
+				desc := theme.HelpDesc.Render(it.desc)
+				out = append(out, key+" "+desc)
+			}
+			out = append(out, "")
+		}
+		return out
+	}
 
-	return strings.Join(lines, "\n")
+	leftLines := renderCol(leftCats, 24)
+	rightLines := renderCol(rightCats, 20)
+
+	for len(leftLines) < len(rightLines) {
+		leftLines = append(leftLines, "")
+	}
+	for len(rightLines) < len(leftLines) {
+		rightLines = append(rightLines, "")
+	}
+
+	// Fix each column's cell width so JoinHorizontal aligns crisply.
+	const leftColW = 60
+	leftCol := lipgloss.NewStyle().Width(leftColW).Render(strings.Join(leftLines, "\n"))
+	rightCol := strings.Join(rightLines, "\n")
+
+	cols := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+
+	var out []string
+	out = append(out, "")
+	out = append(out, theme.PreviewTitle.Render("  ⌨  Tuiple — Keyboard Shortcuts"))
+	out = append(out, "")
+	out = append(out, cols)
+	out = append(out, theme.Dim.Render("  Press ? to close"))
+
+	return strings.Join(out, "\n")
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────

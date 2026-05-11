@@ -21,8 +21,23 @@ func run(repo string, args ...string) (string, error) {
 // runRaw is like run but returns raw stdout bytes (useful for diff output
 // where trailing whitespace and exact bytes matter).
 func runRaw(repo string, args ...string) ([]byte, error) {
+	return runRawStdin(repo, "", args...)
+}
+
+// runWithStdin runs git with stdin piped from the given string and returns
+// trimmed stdout. Used for commands like `git commit -F -` that read the
+// message from stdin.
+func runWithStdin(repo, stdin string, args ...string) (string, error) {
+	out, err := runRawStdin(repo, stdin, args...)
+	return strings.TrimRight(string(out), "\n"), err
+}
+
+func runRawStdin(repo, stdin string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repo
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -33,7 +48,6 @@ func runRaw(repo string, args ...string) ([]byte, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
-		// Translate well-known errors so callers can branch on them.
 		if strings.Contains(msg, "not a git repository") {
 			return nil, ErrNotARepo
 		}

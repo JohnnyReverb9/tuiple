@@ -9,7 +9,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/components/preview/mediarender"
 	"tuiple/filesystem"
 	"tuiple/icons"
 	"tuiple/theme"
@@ -69,6 +68,16 @@ type Model struct {
 	history  []historyEntry
 	selected map[string]struct{}
 	err      error
+
+	gitFileStat map[string]string   // abs path -> 2-char porcelain code
+	gitDirHas   map[string]struct{} // dirs that contain changes (abs path)
+}
+
+// SetGitState injects git status data so the list can render per-row
+// markers. Passing nil maps clears the markers.
+func (m *Model) SetGitState(fileStat map[string]string, dirHas map[string]struct{}) {
+	m.gitFileStat = fileStat
+	m.gitDirHas = dirHas
 }
 
 // New creates a file-list rooted at the given path.
@@ -192,8 +201,49 @@ func (m Model) visibleHeight() int {
 }
 
 func (m Model) nameWidth() int {
-	// Layout: " " icon " " name   size(8) " " date(12) → fixed=25
-	return max(10, m.width-25)
+	// Layout: " " icon mark(1) " " name " " size(8) " " date(12) → fixed=26
+	return max(10, m.width-26)
+}
+
+// renderGitMarker returns a 1-cell coloured marker character for the given
+// entry, or " " when there is no git change associated with it.
+func (m Model) renderGitMarker(entry filesystem.FileEntry) string {
+	if entry.IsDir {
+		if _, ok := m.gitDirHas[entry.Path]; ok {
+			return lipgloss.NewStyle().Foreground(theme.AccentMagenta).Bold(true).Render("●")
+		}
+		return " "
+	}
+	code, ok := m.gitFileStat[entry.Path]
+	if !ok {
+		return " "
+	}
+	ch, col := gitMarkerChar(code)
+	return lipgloss.NewStyle().Foreground(col).Bold(true).Render(string(ch))
+}
+
+func gitMarkerChar(code string) (rune, lipgloss.TerminalColor) {
+	if len(code) < 2 {
+		return ' ', theme.FgDimColor
+	}
+	idx, wt := code[0], code[1]
+	switch {
+	case idx == '?' && wt == '?':
+		return '?', theme.FgDimColor
+	case idx == 'A':
+		return 'A', theme.AccentGreen
+	case idx == 'D' || wt == 'D':
+		return 'D', theme.AccentRed
+	case idx == 'R':
+		return 'R', theme.AccentMagenta
+	case idx == 'M' || wt == 'M':
+		return 'M', theme.AccentBlue
+	case idx != ' ':
+		return rune(idx), theme.AccentYellow
+	case wt != ' ':
+		return rune(wt), theme.AccentYellow
+	}
+	return ' ', theme.FgDimColor
 }
 
 // ── Update ─────────────────────────────────────────────────────────────
@@ -282,25 +332,22 @@ func (m Model) updateFilter(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
-	case "up":
+	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
 			m.fixScroll()
 		}
-	case "down":
+	case "down", "j":
 		if m.cursor < len(m.entries)-1 {
 			m.cursor++
 			m.fixScroll()
 		}
-	case "enter", "right":
+	case "enter", "right", "l":
+		// For audio files, enterSelected emits OpenFileRequestMsg; the
+		// app layer then toggles playback when the same audio is already
+		// loaded in the preview pane.
 		return m.enterSelected()
-	case "l":
-		if entry := m.SelectedEntry(); entry != nil {
-			if mediarender.Classify(entry.Extension) == mediarender.KindAudio {
-				return m.enterSelected()
-			}
-		}
-	case "backspace", "left":
+	case "backspace", "left", "h":
 		return m.goUp()
 	case "~":
 		return m.NavigateTo(filesystem.HomeDir())
@@ -465,7 +512,8 @@ func (m Model) renderHeader() string {
 	name := theme.ListHeader.Width(nameW).Render("Name")
 	size := theme.ListHeader.Width(8).Align(lipgloss.Right).Render("Size")
 	date := theme.ListHeader.Width(12).Render("Modified")
-	return fmt.Sprintf("   %s %s %s", name, size, date)
+	// Layout: " icon mark name size date" → 3 leading cells before "Name"
+	return fmt.Sprintf("    %s %s %s", name, size, date)
 }
 
 func (m Model) renderEntry(idx int) string {
@@ -493,11 +541,14 @@ func (m Model) renderEntry(idx int) string {
 	// Date
 	dateStr := filesystem.FormatTime(entry.ModTime)
 
+	gitMark := m.renderGitMarker(entry)
+
 	// ── Selected row (solid background) ──────────────────────────────
 	if isSelected && m.focused {
 		displayName := truncate(name, nameW)
-		line := fmt.Sprintf(" %s %s %s %s",
+		line := fmt.Sprintf(" %s %s %s %s %s",
 			icon.Symbol,
+			gitMark,
 			lipgloss.NewStyle().Width(nameW).Render(displayName),
 			lipgloss.NewStyle().Width(8).Align(lipgloss.Right).Render(sizeStr),
 			lipgloss.NewStyle().Width(12).Render(dateStr),
@@ -508,8 +559,9 @@ func (m Model) renderEntry(idx int) string {
 	// ── Unfocused cursor (subtle highlight) ──────────────────────────
 	if isSelected {
 		displayName := truncate(name, nameW)
-		line := fmt.Sprintf(" %s %s %s %s",
+		line := fmt.Sprintf(" %s %s %s %s %s",
 			icon.Symbol,
+			gitMark,
 			lipgloss.NewStyle().Width(nameW).Render(displayName),
 			lipgloss.NewStyle().Width(8).Align(lipgloss.Right).Render(sizeStr),
 			lipgloss.NewStyle().Width(12).Render(dateStr),
@@ -538,7 +590,7 @@ func (m Model) renderEntry(idx int) string {
 	iconStr := lipgloss.NewStyle().Foreground(icon.Color).Render(icon.Symbol)
 	nameStr := nameStyle.Width(nameW).MaxWidth(nameW).Render(name)
 	sizeRendered := theme.FileSize.Width(8).Align(lipgloss.Right).Render(sizeStr)
-	
+
 	// Add visual indicator for marked (selected) rows if they aren't the primary selected cursor
 	if isMarked {
 		iconStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Render("✓")
@@ -547,7 +599,7 @@ func (m Model) renderEntry(idx int) string {
 
 	dateRendered := theme.FileDate.Width(12).Render(dateStr)
 
-	return fmt.Sprintf(" %s %s %s %s", iconStr, nameStr, sizeRendered, dateRendered)
+	return fmt.Sprintf(" %s %s %s %s %s", iconStr, gitMark, nameStr, sizeRendered, dateRendered)
 }
 
 // ── String helpers ─────────────────────────────────────────────────────

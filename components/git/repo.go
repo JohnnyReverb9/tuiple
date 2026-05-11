@@ -50,6 +50,28 @@ type Stash struct {
 	Subject string
 }
 
+// Branch is a single entry from `git for-each-ref`.
+type Branch struct {
+	Name      string // short name; for remote branches includes the remote (e.g. "origin/main")
+	IsCurrent bool   // true for the branch currently checked out (HEAD)
+	IsRemote  bool   // true for refs under refs/remotes
+	Upstream  string // upstream tracking branch (short); empty if none
+	Subject   string // subject of the commit pointed at by the ref
+}
+
+// LocalName strips the remote prefix from a remote branch name so it can
+// be used to create a local tracking branch. For local branches it just
+// returns Name.
+func (b Branch) LocalName() string {
+	if !b.IsRemote {
+		return b.Name
+	}
+	if i := strings.IndexByte(b.Name, '/'); i >= 0 && i < len(b.Name)-1 {
+		return b.Name[i+1:]
+	}
+	return b.Name
+}
+
 // TrackingInfo holds ahead/behind counts vs. the upstream branch.
 type TrackingInfo struct {
 	Upstream string
@@ -193,6 +215,140 @@ func Log(repo string, limit int) ([]Commit, error) {
 		})
 	}
 	return commits, nil
+}
+
+// CommitDetail returns `git show` output for the given commit, including
+// the stat summary and full patch. Used to render the right pane of the
+// Log tab.
+func CommitDetail(repo, hash string) (string, error) {
+	return run(repo, "show", "--no-color", "--stat", "--patch", hash)
+}
+
+// ── Branch operations ─────────────────────────────────────────────────
+
+// ListBranches returns all local and remote branches. Remote symbolic
+// refs (origin/HEAD etc.) are filtered out.
+func ListBranches(repo string) ([]Branch, error) {
+	out, err := run(repo, "for-each-ref",
+		"--format=%(refname)|%(HEAD)|%(upstream:short)|%(contents:subject)",
+		"refs/heads", "refs/remotes")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+
+	var branches []Branch
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		fullName := parts[0]
+		isRemote := strings.HasPrefix(fullName, "refs/remotes/")
+		var name string
+		switch {
+		case isRemote:
+			name = strings.TrimPrefix(fullName, "refs/remotes/")
+		default:
+			name = strings.TrimPrefix(fullName, "refs/heads/")
+		}
+		if strings.HasSuffix(name, "/HEAD") {
+			continue
+		}
+		branches = append(branches, Branch{
+			Name:      name,
+			IsCurrent: parts[1] == "*",
+			IsRemote:  isRemote,
+			Upstream:  parts[2],
+			Subject:   parts[3],
+		})
+	}
+	return branches, nil
+}
+
+// Switch checks out `name`. Uses `git switch`, which auto-creates a local
+// tracking branch when `name` matches a single upstream.
+func Switch(repo, name string) error {
+	_, err := run(repo, "switch", name)
+	return err
+}
+
+// CreateAndSwitch creates a new branch from the current HEAD and switches
+// to it (`git switch -c <name>`).
+func CreateAndSwitch(repo, name string) error {
+	_, err := run(repo, "switch", "-c", name)
+	return err
+}
+
+// DeleteBranch deletes a local branch. If force is true, `-D` is used and
+// the branch is removed even if it is not merged.
+func DeleteBranch(repo, name string, force bool) error {
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	_, err := run(repo, "branch", flag, name)
+	return err
+}
+
+// RenameBranch renames a local branch. If `from` is empty the current
+// branch is renamed.
+func RenameBranch(repo, from, to string) error {
+	args := []string{"branch", "-m"}
+	if from != "" {
+		args = append(args, from)
+	}
+	args = append(args, to)
+	_, err := run(repo, args...)
+	return err
+}
+
+// MergeBranch merges `name` into the current branch.
+func MergeBranch(repo, name string) error {
+	_, err := run(repo, "merge", "--no-edit", name)
+	return err
+}
+
+// RebaseOnto rebases the current branch onto `name`.
+func RebaseOnto(repo, name string) error {
+	_, err := run(repo, "rebase", name)
+	return err
+}
+
+// StashShow returns the patch for a single stash entry (e.g. "stash@{0}").
+func StashShow(repo, ref string) (string, error) {
+	return run(repo, "stash", "show", "--no-color", "-p", ref)
+}
+
+// StashCreate stashes the current working tree changes with an optional
+// message. If msg is empty, git uses its default WIP message.
+func StashCreate(repo, msg string) error {
+	args := []string{"stash", "push"}
+	if strings.TrimSpace(msg) != "" {
+		args = append(args, "-m", msg)
+	}
+	_, err := run(repo, args...)
+	return err
+}
+
+// StashApply applies a stash without removing it from the list.
+func StashApply(repo, ref string) error {
+	_, err := run(repo, "stash", "apply", ref)
+	return err
+}
+
+// StashPop applies a stash and removes it from the list on success.
+func StashPop(repo, ref string) error {
+	_, err := run(repo, "stash", "pop", ref)
+	return err
+}
+
+// StashDrop removes a stash without applying it.
+func StashDrop(repo, ref string) error {
+	_, err := run(repo, "stash", "drop", ref)
+	return err
 }
 
 // Stashes returns the stash list.

@@ -134,15 +134,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
-		case "up":
+		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case "down":
+		case "down", "j":
 			if m.cursor < m.totalItems()-1 {
 				m.cursor++
 			}
-		case "enter", "right":
+		case "enter", "right", "l":
 			if it := m.getItem(m.cursor); it != nil {
 				return m, func() tea.Msg {
 					return NavigateMsg{Path: it.path}
