@@ -30,6 +30,26 @@ type CreateFileRequestMsg struct{}
 type CreateDirRequestMsg struct{}
 type OpenFileRequestMsg struct{ Path string }
 
+// ── Git operation messages (emitted when the list is inside a repo) ────
+
+// GitStageMsg asks the app to stage a file (abs path).
+type GitStageMsg struct{ Path string }
+
+// GitUnstageMsg asks the app to unstage a file (abs path).
+type GitUnstageMsg struct{ Path string }
+
+// GitDiscardMsg asks the app to confirm & discard working-tree changes (abs path).
+type GitDiscardMsg struct{ Path string }
+
+// GitIgnoreMsg asks the app to add a path to .gitignore (abs path).
+type GitIgnoreMsg struct{ Path string }
+
+// GitFileHistoryMsg asks the app to open the file-history popup (abs path).
+type GitFileHistoryMsg struct{ Path string }
+
+// GitBlameMsg asks the app to open the blame popup (abs path).
+type GitBlameMsg struct{ Path string }
+
 // ClearSelectionMsg tells the list to drop its active selections.
 type ClearSelectionMsg struct{}
 
@@ -442,6 +462,37 @@ func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, func() tea.Msg { return CreateFileRequestMsg{} }
 	case "N": // Shift+N
 		return m, func() tea.Msg { return CreateDirRequestMsg{} }
+	}
+
+	// ── Git-aware file operations (only inside a repo) ─────────────
+	if m.hasGitState() {
+		entry := m.SelectedEntry()
+		if entry != nil && !entry.IsDir {
+			switch msg.String() {
+			case "a":
+				p := entry.Path
+				return m, func() tea.Msg { return GitStageMsg{Path: p} }
+			case "R":
+				p := entry.Path
+				return m, func() tea.Msg { return GitUnstageMsg{Path: p} }
+			case "D": // Shift+D — discard working-tree changes
+				p := entry.Path
+				return m, func() tea.Msg { return GitDiscardMsg{Path: p} }
+			case "H":
+				p := entry.Path
+				return m, func() tea.Msg { return GitFileHistoryMsg{Path: p} }
+			case "L":
+				p := entry.Path
+				return m, func() tea.Msg { return GitBlameMsg{Path: p} }
+			}
+		}
+		if entry != nil {
+			switch msg.String() {
+			case "i":
+				p := entry.Path
+				return m, func() tea.Msg { return GitIgnoreMsg{Path: p} }
+			}
+		}
 	}
 
 	return m, nil

@@ -28,6 +28,7 @@ type commitInputMode int
 const (
 	commitInputNone commitInputMode = iota
 	commitInputStashMessage
+	commitInputDiscard // y/n prompt, not a text field
 )
 
 // commitTab holds all state for the Commit tab. Embedded into Model.
@@ -122,6 +123,93 @@ func (m *Model) refreshDiff() {
 		m.commit.diff = out
 	}
 	m.commit.diffLines = strings.Split(m.commit.diff, "\n")
+}
+
+func (m *Model) stageCurrentFile() {
+	if len(m.commit.changes) == 0 {
+		return
+	}
+	c := m.commit.changes[m.commit.cursor]
+	if err := StageFile(m.root, c.Path); err != nil {
+		m.commit.status = err.Error()
+		m.commit.statusErr = true
+		return
+	}
+	m.commit.status = "staged " + c.Path
+	m.commit.statusErr = false
+	prev := m.commit.cursor
+	m.reloadCommit()
+	if prev < len(m.commit.changes) {
+		m.commit.cursor = prev
+	}
+}
+
+func (m *Model) unstageCurrentFile() {
+	if len(m.commit.changes) == 0 {
+		return
+	}
+	c := m.commit.changes[m.commit.cursor]
+	if !c.Staged() {
+		m.commit.status = c.Path + " is not staged"
+		m.commit.statusErr = true
+		return
+	}
+	if err := UnstageFile(m.root, c.Path); err != nil {
+		m.commit.status = err.Error()
+		m.commit.statusErr = true
+		return
+	}
+	m.commit.status = "unstaged " + c.Path
+	m.commit.statusErr = false
+	prev := m.commit.cursor
+	m.reloadCommit()
+	if prev < len(m.commit.changes) {
+		m.commit.cursor = prev
+	}
+}
+
+func (m *Model) discardCurrentFile() {
+	if len(m.commit.changes) == 0 {
+		return
+	}
+	c := m.commit.changes[m.commit.cursor]
+	if c.Untracked() {
+		m.commit.status = "untracked file — delete it from the filelist instead"
+		m.commit.statusErr = true
+		return
+	}
+	if err := DiscardFile(m.root, c.Path); err != nil {
+		m.commit.status = err.Error()
+		m.commit.statusErr = true
+		return
+	}
+	m.commit.status = "discarded " + c.Path
+	m.commit.statusErr = false
+	prev := m.commit.cursor
+	m.reloadCommit()
+	if prev < len(m.commit.changes) {
+		m.commit.cursor = prev
+	}
+}
+
+func (m *Model) addCurrentToGitIgnore() {
+	if len(m.commit.changes) == 0 {
+		return
+	}
+	c := m.commit.changes[m.commit.cursor]
+	added, err := AddToGitIgnore(m.root, c.Path)
+	if err != nil {
+		m.commit.status = err.Error()
+		m.commit.statusErr = true
+		return
+	}
+	if added {
+		m.commit.status = "added to .gitignore: " + c.Path
+	} else {
+		m.commit.status = "removed from .gitignore: " + c.Path
+	}
+	m.commit.statusErr = false
+	m.reloadCommit()
 }
 
 func (m *Model) toggleStage() {
@@ -226,6 +314,9 @@ func (m *Model) runCommit() {
 // the outer overlay whether the message has been fully handled (true) or
 // should fall through to overlay-level handling such as tab cycling.
 func (m Model) updateCommit(msg tea.Msg) (Model, tea.Cmd, bool) {
+	if m.commit.inputMode == commitInputDiscard {
+		return m.updateDiscardConfirm(msg)
+	}
 	if m.commit.inputMode != commitInputNone {
 		return m.updateCommitInput(msg)
 	}
@@ -233,6 +324,23 @@ func (m Model) updateCommit(msg tea.Msg) (Model, tea.Cmd, bool) {
 		return m.updateCommitMessage(msg)
 	}
 	return m.updateCommitList(msg)
+}
+
+func (m Model) updateDiscardConfirm(msg tea.Msg) (Model, tea.Cmd, bool) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil, true
+	}
+	switch keyMsg.String() {
+	case "y", "Y":
+		m.commit.inputMode = commitInputNone
+		m.discardCurrentFile()
+	case "n", "N", "esc":
+		m.commit.inputMode = commitInputNone
+		m.commit.status = "cancelled"
+		m.commit.statusErr = false
+	}
+	return m, nil, true
 }
 
 func (m Model) updateCommitList(msg tea.Msg) (Model, tea.Cmd, bool) {
@@ -269,10 +377,38 @@ func (m Model) updateCommitList(msg tea.Msg) (Model, tea.Cmd, bool) {
 		m.toggleStage()
 		return m, nil, true
 	case "a":
-		m.stageAll()
+		m.stageCurrentFile()
 		return m, nil, true
 	case "A":
-		m.unstageAll()
+		m.stageAll()
+		return m, nil, true
+	case "R":
+		m.unstageCurrentFile()
+		return m, nil, true
+	case "D":
+		if len(m.commit.changes) > 0 {
+			c := m.commit.changes[m.commit.cursor]
+			m.commit.inputMode = commitInputDiscard
+			m.commit.status = fmt.Sprintf("Discard changes to %q? (y/n)", c.Path)
+			m.commit.statusErr = false
+		}
+		return m, nil, true
+	case "I":
+		m.addCurrentToGitIgnore()
+		return m, nil, true
+	case "H":
+		if len(m.commit.changes) > 0 {
+			c := m.commit.changes[m.commit.cursor]
+			repo, path := m.root, c.Path
+			return m, func() tea.Msg { return OpenFileHistoryMsg{Repo: repo, Path: path} }, true
+		}
+		return m, nil, true
+	case "L":
+		if len(m.commit.changes) > 0 {
+			c := m.commit.changes[m.commit.cursor]
+			repo, path := m.root, c.Path
+			return m, func() tea.Msg { return OpenBlameMsg{Repo: repo, Path: path} }, true
+		}
 		return m, nil, true
 	case "r":
 		m.reloadCommit()
@@ -499,6 +635,11 @@ func (m Model) renderCommitMessage(w int) string {
 }
 
 func (m Model) renderCommitStatus(w int) string {
+	if m.commit.inputMode == commitInputDiscard {
+		return lipgloss.NewStyle().
+			Foreground(theme.AccentYellow).Bold(true).Width(w).
+			Render(" " + m.commit.status)
+	}
 	if m.commit.inputMode != commitInputNone {
 		var label string
 		if m.commit.inputMode == commitInputStashMessage {

@@ -1,6 +1,9 @@
 package git
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -314,6 +317,121 @@ func MergeBranch(repo, name string) error {
 // RebaseOnto rebases the current branch onto `name`.
 func RebaseOnto(repo, name string) error {
 	_, err := run(repo, "rebase", name)
+	return err
+}
+
+// ── Per-file operations ───────────────────────────────────────────────
+
+// StageFile stages a single file (path relative to repo root).
+func StageFile(repo, path string) error {
+	_, err := run(repo, "add", "--", path)
+	return err
+}
+
+// UnstageFile removes a file from the staging area without discarding changes.
+func UnstageFile(repo, path string) error {
+	_, err := run(repo, "restore", "--staged", "--", path)
+	return err
+}
+
+// DiscardFile discards working-tree changes for path (relative to repo root).
+// Untracked files cannot be discarded this way.
+func DiscardFile(repo, path string) error {
+	_, err := run(repo, "checkout", "--", path)
+	return err
+}
+
+// AddToGitIgnore toggles relPath in the repo's top-level .gitignore:
+// if the path is already present as its own line it is removed,
+// otherwise it is appended as a new line (ensuring the file ends with \n
+// before writing so we never join to an existing non-terminated line).
+//
+// For directories, the entry is written with a trailing slash (e.g.
+// "dist/") so that git ignores the directory and all its contents.
+func AddToGitIgnore(repo, relPath string) (added bool, err error) {
+	p := filepath.Join(repo, ".gitignore")
+
+	// Normalise: directories get a trailing slash so git ignores their
+	// contents too. Strip any existing trailing slash first to avoid
+	// double-slashing on repeated calls.
+	relPath = strings.TrimRight(relPath, "/")
+	if info, statErr := os.Stat(filepath.Join(repo, relPath)); statErr == nil && info.IsDir() {
+		relPath = relPath + "/"
+	}
+
+	// Read existing content (treat a missing file as empty).
+	raw, err := os.ReadFile(p)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	content := string(raw)
+
+	// Check whether relPath is already a line in the file.
+	// Also match the bare path without trailing slash in case it was
+	// added previously without one.
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == relPath || trimmed == strings.TrimRight(relPath, "/") {
+			// Remove that line.
+			lines = append(lines[:i], lines[i+1:]...)
+			return false, os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0644)
+		}
+	}
+
+	// Not present — append, guaranteeing a newline boundary.
+	var buf strings.Builder
+	buf.WriteString(content)
+	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+		buf.WriteByte('\n')
+	}
+	buf.WriteString(relPath)
+	buf.WriteByte('\n')
+	return true, os.WriteFile(p, []byte(buf.String()), 0644)
+}
+
+// unused sentinel to satisfy the fmt import used elsewhere in this file.
+var _ = fmt.Sprintf
+
+// LogFile returns the most recent limit commits that touch path.
+func LogFile(repo, path string, limit int) ([]Commit, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	format := "%H%x00%h%x00%an%x00%ar%x00%s"
+	out, err := run(repo, "log", "--no-color", "-n", strconv.Itoa(limit),
+		"--format="+format, "--", path)
+	if err != nil || out == "" {
+		return nil, err
+	}
+	var commits []Commit
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "\x00", 5)
+		if len(parts) < 5 {
+			continue
+		}
+		commits = append(commits, Commit{
+			Hash: parts[0], ShortSHA: parts[1],
+			Author: parts[2], RelDate: parts[3], Subject: parts[4],
+		})
+	}
+	return commits, nil
+}
+
+// BlameFile returns `git blame` output for path.
+// Uses `-c color.ui=never` because `git blame` does not accept `--no-color`.
+func BlameFile(repo, path string) (string, error) {
+	return run(repo, "-c", "color.ui=never", "blame", path)
+}
+
+// CommitFileDetail returns `git show` filtered to a single path.
+func CommitFileDetail(repo, hash, path string) (string, error) {
+	return run(repo, "show", "--no-color", "--stat", "--patch", hash, "--", path)
+}
+
+// ResetTo resets HEAD to hash using mode ("soft", "mixed", or "hard").
+func ResetTo(repo, hash, mode string) error {
+	_, err := run(repo, "reset", "--"+mode, hash)
 	return err
 }
 

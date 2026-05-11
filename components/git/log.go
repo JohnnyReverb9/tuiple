@@ -34,6 +34,10 @@ type logTab struct {
 
 	input     textinput.Model
 	inputMode logInputMode
+
+	// reset flow: 0=none, 1=pick mode (s/m/h), 2=confirm (y/n)
+	resetStep int
+	resetMode string // "soft", "mixed", "hard"
 }
 
 func newLogTab() logTab {
@@ -151,6 +155,9 @@ func (m *Model) logCreateBranch(name string) {
 // updateLog handles input for the Log tab. The boolean return tells the
 // outer overlay whether to skip overlay-level fallback handling.
 func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
+	if m.log.resetStep > 0 {
+		return m.updateLogReset(msg)
+	}
 	if m.log.inputMode != logInputNone {
 		return m.updateLogInput(msg)
 	}
@@ -185,6 +192,16 @@ func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
 		m.log.detailOff = clampOffset(len(m.log.detailLines), len(m.log.detailLines))
 		return m, nil, true
 	case "r":
+		// Enter reset flow: pick mode first
+		c, ok := m.logCurrent()
+		if !ok {
+			return m, nil, true
+		}
+		m.log.resetStep = 1
+		m.log.status = fmt.Sprintf("Reset to %s: (s)oft  (m)ixed  (h)ard  Esc=cancel", c.ShortSHA)
+		m.log.statusErr = false
+		return m, nil, true
+	case "ctrl+r":
 		m.reloadLog()
 		m.log.status = "reloaded"
 		m.log.statusErr = false
@@ -201,6 +218,60 @@ func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
 		m.log.input.Placeholder = "new branch name"
 		return m, m.log.input.Focus(), true
 	}
+	return m, nil, false
+}
+
+func (m Model) updateLogReset(msg tea.Msg) (Model, tea.Cmd, bool) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil, true
+	}
+
+	if m.log.resetStep == 1 { // pick soft / mixed / hard
+		switch keyMsg.String() {
+		case "s", "m", "h":
+			modes := map[string]string{"s": "soft", "m": "mixed", "h": "hard"}
+			m.log.resetMode = modes[keyMsg.String()]
+			m.log.resetStep = 2
+			c, _ := m.logCurrent()
+			m.log.status = fmt.Sprintf("%s reset to %s? (y/n)", m.log.resetMode, c.ShortSHA)
+			m.log.statusErr = m.log.resetMode == "hard" // red for hard
+		case "esc", "q":
+			m.log.resetStep = 0
+			m.log.resetMode = ""
+			m.log.status = "cancelled"
+			m.log.statusErr = false
+		}
+		return m, nil, true
+	}
+
+	if m.log.resetStep == 2 { // confirm y/n
+		switch keyMsg.String() {
+		case "y", "Y":
+			m.log.resetStep = 0
+			c, ok := m.logCurrent()
+			if ok {
+				if err := ResetTo(m.root, c.Hash, m.log.resetMode); err != nil {
+					m.log.status = err.Error()
+					m.log.statusErr = true
+				} else {
+					m.log.status = fmt.Sprintf("%s reset to %s", m.log.resetMode, c.ShortSHA)
+					m.log.statusErr = false
+					m.reloadLog()
+					m.reloadCommit()
+					m.tracking, _ = Tracking(m.root)
+				}
+			}
+			m.log.resetMode = ""
+		case "n", "N", "esc":
+			m.log.resetStep = 0
+			m.log.resetMode = ""
+			m.log.status = "cancelled"
+			m.log.statusErr = false
+		}
+		return m, nil, true
+	}
+
 	return m, nil, false
 }
 
