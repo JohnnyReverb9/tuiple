@@ -170,9 +170,9 @@ type Model struct {
 	width  int
 	height int
 
-	showHelp    bool
-	helpTabIdx  int // 0 = System, 1 = Git
-	ready       bool
+	showHelp   bool
+	helpTabIdx int // 0 = System, 1 = Git
+	ready      bool
 
 	lastDirMod time.Time
 }
@@ -192,18 +192,18 @@ func New(startDir string) Model {
 	}
 
 	return Model{
-		sidebar:       sidebar.New(),
-		filelist:      filelist.New(startDir),
-		preview:       preview.New(),
-		textInput:     ti,
+		sidebar:          sidebar.New(),
+		filelist:         filelist.New(startDir),
+		preview:          preview.New(),
+		textInput:        ti,
 		searchOverlay:    search.New(),
 		gitOverlay:       git.New(),
 		branchesPopup:    git.NewBranches(),
 		fileHistoryPopup: git.NewFileHistory(),
 		blamePopup:       git.NewBlame(),
-		active:        panelFileList,
-		currentPath:   startDir,
-		lastDirMod:    lastMod,
+		active:           panelFileList,
+		currentPath:      startDir,
+		lastDirMod:       lastMod,
 	}
 }
 
@@ -1126,7 +1126,7 @@ func (m Model) renderStatusBar() string {
 	left := theme.StatusPath.Render(leftStr)
 	if m.gitBranch != "" {
 		branchStyle := lipgloss.NewStyle().Foreground(theme.AccentGreen).Bold(true)
-		left += "  " + branchStyle.Render(" "+m.gitBranch)
+		left += "  " + branchStyle.Render(" ["+m.gitBranch+"]")
 	}
 
 	entryCount := len(m.filelist.Entries())
