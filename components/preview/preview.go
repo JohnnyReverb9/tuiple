@@ -528,7 +528,46 @@ func (m Model) View() string {
 		}
 	}
 
-	return strings.Join(sections, "\n")
+	return padPanelLines(strings.Join(sections, "\n"), m.width, m.height)
+}
+
+// padPanelLines normalises a panel's output so every terminal row is exactly
+// w cells wide and the whole block is at most h rows. Without this, when
+// switching to a file whose preview lines are shorter than the previous
+// file's lines, Bubble Tea's differential renderer leaves the unwritten
+// trailing cells with stale characters from the previous frame — which is
+// what causes "previous preview bleeds into the new one" artefacts.
+func padPanelLines(s string, w, h int) string {
+	if w <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		// One logical row must equal one terminal row.
+		if strings.ContainsAny(line, "\r") {
+			line = strings.ReplaceAll(line, "\r", "")
+		}
+		lw := lipgloss.Width(line)
+		switch {
+		case lw < w:
+			line += strings.Repeat(" ", w-lw)
+		case lw > w:
+			line = lipgloss.NewStyle().MaxWidth(w).Render(line)
+		}
+		lines[i] = line
+	}
+	// Ensure the block has at least h rows so trailing rows from a previous
+	// (taller) frame get fully overwritten too.
+	if h > 0 {
+		blank := strings.Repeat(" ", w)
+		for len(lines) < h {
+			lines = append(lines, blank)
+		}
+		if len(lines) > h {
+			lines = lines[:h]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderAudioPlayer builds the audio player UI lines.

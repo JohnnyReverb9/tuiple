@@ -197,5 +197,33 @@ func (m Model) View() string {
 		}
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	// Normalise every line to exactly m.width cells and pad the block to
+	// m.height rows. This guarantees that every terminal cell within the
+	// sidebar panel gets written on every frame; otherwise Bubble Tea's
+	// differential renderer leaves stale characters from previous frames
+	// (visible as "oks" instead of "Bookmarks" after navigation).
+	for i, line := range lines {
+		if strings.ContainsAny(line, "\r\n") {
+			line = strings.ReplaceAll(line, "\r", "")
+			line = strings.ReplaceAll(line, "\n", " ")
+		}
+		w := lipgloss.Width(line)
+		switch {
+		case w < m.width:
+			line += strings.Repeat(" ", m.width-w)
+		case w > m.width:
+			line = lipgloss.NewStyle().MaxWidth(m.width).Render(line)
+		}
+		lines[i] = line
+	}
+	if m.height > 0 {
+		blank := strings.Repeat(" ", m.width)
+		for len(lines) < m.height {
+			lines = append(lines, blank)
+		}
+		if len(lines) > m.height {
+			lines = lines[:m.height]
+		}
+	}
+	return strings.Join(lines, "\n")
 }

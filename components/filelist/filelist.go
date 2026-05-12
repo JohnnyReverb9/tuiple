@@ -239,7 +239,7 @@ func (m Model) nameWidth() int {
 func (m Model) renderGitMarker(entry filesystem.FileEntry) string {
 	if entry.IsDir {
 		if _, ok := m.gitDirHas[entry.Path]; ok {
-			return lipgloss.NewStyle().Foreground(theme.AccentMagenta).Bold(true).Render("●")
+			return lipgloss.NewStyle().Foreground(theme.AccentMagenta).Bold(true).Width(1).MaxWidth(1).Render("●")
 		}
 		return " "
 	}
@@ -248,7 +248,7 @@ func (m Model) renderGitMarker(entry filesystem.FileEntry) string {
 		return " "
 	}
 	ch, col := gitMarkerChar(code)
-	return lipgloss.NewStyle().Foreground(col).Bold(true).Render(string(ch))
+	return lipgloss.NewStyle().Foreground(col).Bold(true).Width(1).MaxWidth(1).Render(string(ch))
 }
 
 // gitMarkerInfo returns the display character and foreground colour for a git
@@ -582,7 +582,43 @@ func (m Model) View() string {
 		lines = append(lines, filterLine)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	// Normalise every line to exactly m.width visual cells and to a
+	// single terminal row. This protects against:
+	//   1. Embedded newlines / control chars in any rendered segment
+	//      (would otherwise create spurious extra rows in the panel).
+	//   2. Per-row width drift caused by ambiguous-width characters
+	//      that the terminal renders as 2 cells but lipgloss counts as 1.
+	// Both of those issues break Bubble Tea's differential renderer and
+	// cause partial-name / blank-row artifacts after cursor movement.
+	for i, line := range lines {
+		// Collapse any newlines/carriage returns so that one logical
+		// list row always equals exactly one terminal row.
+		if strings.ContainsAny(line, "\n\r") {
+			line = strings.ReplaceAll(line, "\r", "")
+			line = strings.ReplaceAll(line, "\n", " ")
+		}
+		w := lipgloss.Width(line)
+		switch {
+		case w < m.width:
+			line += strings.Repeat(" ", m.width-w)
+		case w > m.width:
+			// Truncate down to m.width while preserving ANSI codes.
+			line = lipgloss.NewStyle().MaxWidth(m.width).Render(line)
+		}
+		lines[i] = line
+	}
+	// Pad the block up to m.height rows so any leftover cells from a
+	// previous (taller) frame get fully overwritten.
+	if m.height > 0 {
+		blank := strings.Repeat(" ", m.width)
+		for len(lines) < m.height {
+			lines = append(lines, blank)
+		}
+		if len(lines) > m.height {
+			lines = lines[:m.height]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderHeader() string {
@@ -605,8 +641,12 @@ func (m Model) renderEntry(idx int) string {
 	_, isMarked := m.selected[entry.Path]
 	icon := icons.GetIcon(entry.Name, entry.Extension, entry.IsDir, entry.IsExec, entry.IsSymlink)
 
-	// Prepare the name
-	name := entry.Name
+	// Prepare the name. Strip any control characters (newlines, tabs, CR,
+	// other low-byte bytes) so that a single entry can never expand into
+	// multiple terminal rows or move the cursor unexpectedly. Without this,
+	// a file whose name contains a `\n` would split its row in half and
+	// shift the layout of every entry below it.
+	name := sanitizeName(entry.Name)
 	if entry.IsDir {
 		name += "/"
 	}
@@ -653,11 +693,11 @@ func (m Model) renderEntry(idx int) string {
 		sp := applyBg(lipgloss.NewStyle()).Render(" ")
 		iconStr := applyBg(lipgloss.NewStyle().Foreground(icon.Color)).Width(1).MaxWidth(1).Render(icon.Symbol)
 		nameStr := applyBg(lipgloss.NewStyle()).Width(nameW).Render(truncate(name, nameW))
-		sizeRend := applyBg(lipgloss.NewStyle()).Width(8).Align(lipgloss.Right).Render(sizeStr)
-		dateRend := applyBg(lipgloss.NewStyle()).Width(12).Render(dateStr)
+		sizeRend := applyBg(lipgloss.NewStyle()).Width(8).Align(lipgloss.Right).MaxWidth(8).Render(sizeStr)
+		dateRend := applyBg(lipgloss.NewStyle()).Width(12).MaxWidth(12).Render(dateStr)
 		if showGit {
 			ch, col := m.gitMarkerInfo(entry)
-			markStr := applyBg(lipgloss.NewStyle().Foreground(col)).Bold(true).Render(ch)
+			markStr := applyBg(lipgloss.NewStyle().Foreground(col)).Bold(true).Width(1).MaxWidth(1).Render(ch)
 			return sp + iconStr + sp + nameStr + sp + markStr + sp + sizeRend + sp + dateRend
 		}
 		return sp + iconStr + sp + nameStr + sp + sizeRend + sp + dateRend
@@ -671,11 +711,11 @@ func (m Model) renderEntry(idx int) string {
 		sp := applyBg(lipgloss.NewStyle()).Render(" ")
 		iconStr := applyBg(lipgloss.NewStyle().Foreground(icon.Color)).Width(1).MaxWidth(1).Render(icon.Symbol)
 		nameStr := applyBg(lipgloss.NewStyle()).Width(nameW).Render(truncate(name, nameW))
-		sizeRend := applyBg(lipgloss.NewStyle()).Width(8).Align(lipgloss.Right).Render(sizeStr)
-		dateRend := applyBg(lipgloss.NewStyle()).Width(12).Render(dateStr)
+		sizeRend := applyBg(lipgloss.NewStyle()).Width(8).Align(lipgloss.Right).MaxWidth(8).Render(sizeStr)
+		dateRend := applyBg(lipgloss.NewStyle()).Width(12).MaxWidth(12).Render(dateStr)
 		if showGit {
 			ch, col := m.gitMarkerInfo(entry)
-			markStr := applyBg(lipgloss.NewStyle().Foreground(col)).Bold(true).Render(ch)
+			markStr := applyBg(lipgloss.NewStyle().Foreground(col)).Bold(true).Width(1).MaxWidth(1).Render(ch)
 			return sp + iconStr + sp + nameStr + sp + markStr + sp + sizeRend + sp + dateRend
 		}
 		return sp + iconStr + sp + nameStr + sp + sizeRend + sp + dateRend
@@ -697,7 +737,7 @@ func (m Model) renderEntry(idx int) string {
 	}
 
 	nameStr := nameStyle.Width(nameW).MaxWidth(nameW).Render(name)
-	sizeRendered := theme.FileSize.Width(8).Align(lipgloss.Right).Render(sizeStr)
+	sizeRendered := theme.FileSize.Width(8).Align(lipgloss.Right).MaxWidth(8).Render(sizeStr)
 
 	// Visual indicator for marked (multi-selected) rows
 	if isMarked {
@@ -705,12 +745,31 @@ func (m Model) renderEntry(idx int) string {
 		nameStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Width(nameW).MaxWidth(nameW).Render(name)
 	}
 
-	dateRendered := theme.FileDate.Width(12).Render(dateStr)
+	dateRendered := theme.FileDate.Width(12).MaxWidth(12).Render(dateStr)
 
 	return buildLine(iconCell, nameStr, sizeRendered, dateRendered)
 }
 
 // ── String helpers ─────────────────────────────────────────────────────
+
+// sanitizeName replaces control characters (newline, CR, tab, other bytes
+// below 0x20, plus DEL) with a visible placeholder so that a filename
+// cannot break the row layout by inserting line breaks or moving the
+// terminal cursor mid-render.
+func sanitizeName(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, s)
+}
 
 func truncate(s string, maxW int) string {
 	if lipgloss.Width(s) <= maxW {
