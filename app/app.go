@@ -427,7 +427,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ":":
 			m.dialogMode = DialogGoToPath
 			m.textInput.SetValue("")
-			m.textInput.Placeholder = "/absolute  ~/relative-to-home  ./relative"
+			m.textInput.Placeholder = "Enter path..."
 			m.textInput.Focus()
 			return m, nil
 		case "f":

@@ -296,6 +296,19 @@ func DeleteBranch(repo, name string, force bool) error {
 	return err
 }
 
+// DeleteRemoteBranch deletes a branch on the remote.  `fullName` is the
+// short form as returned by ListBranches for remote refs, i.e.
+// "<remote>/<branch>" (e.g. "origin/feature/foo").  Splitting it back into
+// its remote and branch parts is done here so callers don't have to.
+func DeleteRemoteBranch(repo, fullName string) (string, error) {
+	i := strings.IndexByte(fullName, '/')
+	if i <= 0 || i >= len(fullName)-1 {
+		return "", fmt.Errorf("not a remote branch: %q", fullName)
+	}
+	remote, branch := fullName[:i], fullName[i+1:]
+	return runWithOutput(repo, "push", remote, "--delete", branch)
+}
+
 // RenameBranch renames a local branch. If `from` is empty the current
 // branch is renamed.
 func RenameBranch(repo, from, to string) error {
@@ -437,8 +450,26 @@ func ResetTo(repo, hash, mode string) error {
 
 // Push pushes the current branch to its upstream remote and returns the
 // combined stdout+stderr so callers can show a meaningful status message.
+//
+// When the current branch has no upstream configured yet (typical for a
+// branch that was just created locally), `git push` errors out telling
+// the user to rerun with --set-upstream.  Rather than dump that whole
+// hint into the status bar we detect the case and transparently rerun
+// the push with --set-upstream origin <branch>.
 func Push(repo string) (string, error) {
-	return runWithOutput(repo, "push")
+	out, err := runWithOutput(repo, "push")
+	if err == nil {
+		return out, nil
+	}
+	if !strings.Contains(out, "has no upstream branch") &&
+		!strings.Contains(out, "set-upstream") {
+		return out, err
+	}
+	branch, berr := CurrentBranch(repo)
+	if berr != nil || branch == "" || branch == "HEAD" {
+		return out, err
+	}
+	return runWithOutput(repo, "push", "--set-upstream", "origin", branch)
 }
 
 // Pull pulls (fetch + merge) from the upstream remote and returns combined
