@@ -119,6 +119,7 @@ const (
 	DialogNewFile
 	DialogNewDir
 	DialogGitDiscard // y/N confirmation before `git checkout -- <file>`
+	DialogGoToPath   // free-form path entry (Finder-style ⌘⇧G)
 )
 
 // ── Panel enum ─────────────────────────────────────────────────────────
@@ -422,6 +423,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "?":
 			m.showHelp = !m.showHelp
+			return m, nil
+		case ":":
+			m.dialogMode = DialogGoToPath
+			m.textInput.SetValue("")
+			m.textInput.Placeholder = "/absolute  ~/relative-to-home  ./relative"
+			m.textInput.Focus()
 			return m, nil
 		case "f":
 			return m, m.searchOverlay.Start(search.ModeNameSearch, m.currentPath)
@@ -953,6 +960,42 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if msg.String() == "enter" && m.dialogMode == DialogGoToPath {
+			val := strings.TrimSpace(m.textInput.Value())
+			m.dialogMode = DialogNone
+			m.textInput.Blur()
+			if val == "" {
+				return m, nil
+			}
+			target := expandPath(val, m.currentPath)
+			info, err := os.Stat(target)
+			if err != nil {
+				m.statusMsg = "Cannot open: " + err.Error()
+				return m, nil
+			}
+			var navDir, selectName string
+			if info.IsDir() {
+				navDir = target
+			} else {
+				navDir = filepath.Dir(target)
+				selectName = filepath.Base(target)
+			}
+			m.currentPath = navDir
+			m.updateLastDirMod(navDir)
+			var navCmd tea.Cmd
+			m.filelist, navCmd = m.filelist.NavigateTo(navDir)
+			if selectName != "" {
+				m.filelist = m.filelist.SelectByName(selectName)
+			}
+			m.refreshGit()
+			cmds := []tea.Cmd{navCmd}
+			if entry := m.filelist.SelectedEntry(); entry != nil {
+				cmds = append(cmds, m.preview.LoadFile(*entry))
+				m.stampPreview(entry)
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if msg.String() == "enter" {
 			val := m.textInput.Value()
 			if val != "" {
@@ -1003,6 +1046,25 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// expandPath turns a user-typed path into something os.Stat can use:
+//   - "~" or "~/foo" → home directory (~ alone, ~/ prefix)
+//   - "$VAR/foo"     → expanded via os.ExpandEnv
+//   - relative paths → joined against the current directory
+// Trailing whitespace is already stripped by the caller.
+func expandPath(p, cwd string) string {
+	p = os.ExpandEnv(p)
+	if p == "~" {
+		return filesystem.HomeDir()
+	}
+	if strings.HasPrefix(p, "~/") {
+		return filepath.Join(filesystem.HomeDir(), p[2:])
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(cwd, p)
+	}
+	return filepath.Clean(p)
 }
 
 // uniqueDst returns dst unchanged when the path does not exist.
@@ -1119,10 +1181,13 @@ func (m Model) renderStatusBar() string {
 		return theme.StatusBar.Width(m.width).Render(fmt.Sprintf(" Delete %s? (y/N) ", title))
 	} else if m.dialogMode != DialogNone {
 		prefix := " Rename: "
-		if m.dialogMode == DialogNewFile {
+		switch m.dialogMode {
+		case DialogNewFile:
 			prefix = " New File: "
-		} else if m.dialogMode == DialogNewDir {
+		case DialogNewDir:
 			prefix = " New Dir: "
+		case DialogGoToPath:
+			prefix = " Go to: "
 		}
 		return theme.StatusBar.Width(m.width).Render(prefix + m.textInput.View())
 	}
@@ -1178,6 +1243,7 @@ func (m Model) renderHelp() string {
 			{"g / G", "Go to top / bottom"},
 			{"Ctrl+U / Ctrl+D", "Page up / down"},
 			{"~", "Go to home directory"},
+			{":", "Go to path (Finder ⌘⇧G)"},
 			{"Tab / Shift+Tab", "Switch active panel"},
 		}},
 		{"File Operations", []helpItem{
