@@ -176,7 +176,7 @@ func (m *BranchesPopup) doSwitch() {
 	}
 	target := b.LocalName()
 	if err := Switch(m.repo, target); err != nil {
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus("switched to "+target, false)
@@ -190,7 +190,7 @@ func (m *BranchesPopup) doCreate(name string) {
 		return
 	}
 	if err := CreateAndSwitch(m.repo, name); err != nil {
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus("created and switched to "+name, false)
@@ -216,7 +216,7 @@ func (m *BranchesPopup) doRename(newName string) {
 		from = b.Name
 	}
 	if err := RenameBranch(m.repo, from, newName); err != nil {
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus("renamed to "+newName, false)
@@ -236,7 +236,7 @@ func (m *BranchesPopup) doDelete(force bool) {
 			if out != "" {
 				m.setStatus(strings.TrimSpace(out), true)
 			} else {
-				m.setStatus(err.Error(), true)
+				m.setStatus(shortGitError(err), true)
 			}
 			return
 		}
@@ -268,7 +268,7 @@ func (m *BranchesPopup) doDelete(force bool) {
 			m.setStatus(fmt.Sprintf("%q is not fully merged. Press D to force-delete, n to cancel.", b.Name), true)
 			return
 		}
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus("deleted "+b.Name, false)
@@ -301,7 +301,7 @@ func (m *BranchesPopup) doMerge() {
 		return
 	}
 	if err := MergeBranch(m.repo, b.Name); err != nil {
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus("merged "+b.Name+" into current", false)
@@ -314,7 +314,7 @@ func (m *BranchesPopup) doRebase() {
 		return
 	}
 	if err := RebaseOnto(m.repo, b.Name); err != nil {
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus("rebased current onto "+b.Name, false)
@@ -324,7 +324,7 @@ func (m *BranchesPopup) doRebase() {
 func (m *BranchesPopup) doPush() {
 	out, err := Push(m.repo)
 	if err != nil {
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus(parsePushOutput(out), false)
@@ -334,7 +334,7 @@ func (m *BranchesPopup) doPush() {
 func (m *BranchesPopup) doPull() {
 	out, err := Pull(m.repo)
 	if err != nil {
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus(parsePullOutput(out), false)
@@ -344,7 +344,7 @@ func (m *BranchesPopup) doPull() {
 func (m *BranchesPopup) doFetch() {
 	out, err := Fetch(m.repo)
 	if err != nil {
-		m.setStatus(err.Error(), true)
+		m.setStatus(shortGitError(err), true)
 		return
 	}
 	m.setStatus(parseFetchOutput(out), false)
@@ -371,6 +371,43 @@ func parsePushOutput(out string) string {
 		return firstLine(strings.TrimSpace(out))
 	}
 	return "pushed"
+}
+
+// shortGitError boils a multi-line git failure (such as the wall of text
+// pull/push prints when there is no upstream) down to a single status-bar
+// line.  Unknown errors fall back to their first non-empty line.
+func shortGitError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "no tracking information"),
+		strings.Contains(lower, "no upstream branch"):
+		return "no upstream — branch is local-only (push first with P)"
+	case strings.Contains(lower, "would be overwritten by"):
+		return "uncommitted changes block this — stash or commit first"
+	case strings.Contains(lower, "merge conflict"),
+		strings.Contains(lower, "conflicts:"):
+		return "merge conflict — resolve files, then commit"
+	case strings.Contains(lower, "couldn't find remote"),
+		strings.Contains(lower, "could not read from remote"):
+		return "remote unreachable"
+	case strings.Contains(lower, "authentication failed"),
+		strings.Contains(lower, "permission denied"):
+		return "auth failed — check your remote credentials"
+	case strings.Contains(lower, "not fully merged"):
+		return "branch not fully merged (force-delete with D)"
+	}
+	// Generic fallback — first non-empty line, with the "git push: " /
+	// "git pull: " prefix added by runWithOutput stripped.
+	first := firstLine(strings.TrimSpace(msg))
+	first = strings.TrimPrefix(first, "git ")
+	if i := strings.Index(first, ": "); i >= 0 && i < 12 {
+		first = first[i+2:]
+	}
+	return first
 }
 
 // parsePullOutput distils `git pull` combined output into one short line.
