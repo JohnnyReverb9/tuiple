@@ -960,6 +960,16 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if msg.String() == "tab" && m.dialogMode == DialogGoToPath {
+			typed := m.textInput.Value()
+			completed := completePath(typed, m.currentPath)
+			if completed != typed {
+				m.textInput.SetValue(completed)
+				m.textInput.CursorEnd()
+			}
+			return m, nil
+		}
+
 		if msg.String() == "enter" && m.dialogMode == DialogGoToPath {
 			val := strings.TrimSpace(m.textInput.Value())
 			m.dialogMode = DialogNone
@@ -1052,6 +1062,7 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 //   - "~" or "~/foo" → home directory (~ alone, ~/ prefix)
 //   - "$VAR/foo"     → expanded via os.ExpandEnv
 //   - relative paths → joined against the current directory
+//
 // Trailing whitespace is already stripped by the caller.
 func expandPath(p, cwd string) string {
 	p = os.ExpandEnv(p)
@@ -1065,6 +1076,100 @@ func expandPath(p, cwd string) string {
 		p = filepath.Join(cwd, p)
 	}
 	return filepath.Clean(p)
+}
+
+// completePath performs shell-style Tab completion on a path being typed
+// in the Go-to-path dialog. It splits typed into the directory part the
+// user has already entered and the prefix that should be matched against
+// the contents of that directory.
+//
+//   - If exactly one entry matches, that entry's name (plus a trailing
+//     "/" for directories) replaces the prefix.
+//   - If several entries share a longer common prefix than what the user
+//     typed, the prefix is extended to that common stem.
+//   - Otherwise (no matches, or already at the common stem) the input is
+//     left unchanged.
+//
+// The "user form" of the path is preserved: typing "~/Doc" + Tab yields
+// "~/Documents/" rather than the fully-expanded "/Users/<you>/Documents/".
+func completePath(typed, cwd string) string {
+	if typed == "" {
+		return typed
+	}
+
+	// Split into the part the user already wrote (kept verbatim) and the
+	// last segment that we are completing.
+	var userDir, userPrefix string
+	if idx := strings.LastIndex(typed, "/"); idx >= 0 {
+		userDir = typed[:idx+1]
+		userPrefix = typed[idx+1:]
+	} else {
+		userDir = ""
+		userPrefix = typed
+	}
+
+	// Figure out which real directory to scan.
+	resolveDir := cwd
+	if userDir != "" {
+		resolveDir = expandPath(userDir, cwd)
+	}
+
+	entries, err := os.ReadDir(resolveDir)
+	if err != nil {
+		return typed
+	}
+
+	// Only surface hidden entries when the user has explicitly typed a
+	// leading dot — matches the behaviour of bash and zsh's globbing.
+	showHidden := strings.HasPrefix(userPrefix, ".")
+
+	// Match case-insensitively (matches oh-my-zsh's default `case-sensitive
+	// "false"` and Finder behaviour). The replacement always uses the real
+	// on-disk casing so "doc" + Tab fills in "Documents", not "documents".
+	prefixLower := strings.ToLower(userPrefix)
+	type match struct {
+		name  string
+		isDir bool
+	}
+	var matches []match
+	for _, e := range entries {
+		name := e.Name()
+		if !showHidden && strings.HasPrefix(name, ".") {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(name), prefixLower) {
+			matches = append(matches, match{name: name, isDir: e.IsDir()})
+		}
+	}
+
+	if len(matches) == 0 {
+		return typed
+	}
+
+	if len(matches) == 1 {
+		suffix := ""
+		if matches[0].isDir {
+			suffix = "/"
+		}
+		return userDir + matches[0].name + suffix
+	}
+
+	// Multiple matches → extend prefix to the longest common stem,
+	// comparing case-insensitively but keeping the case of the first
+	// match for the visible result.
+	common := matches[0].name
+	for _, mt := range matches[1:] {
+		i := 0
+		for i < len(common) && i < len(mt.name) &&
+			strings.EqualFold(common[i:i+1], mt.name[i:i+1]) {
+			i++
+		}
+		common = common[:i]
+	}
+	if len(common) > len(userPrefix) {
+		return userDir + common
+	}
+	return typed
 }
 
 // uniqueDst returns dst unchanged when the path does not exist.
@@ -1243,7 +1348,7 @@ func (m Model) renderHelp() string {
 			{"g / G", "Go to top / bottom"},
 			{"Ctrl+U / Ctrl+D", "Page up / down"},
 			{"~", "Go to home directory"},
-			{":", "Go to path (Finder ⌘⇧G)"},
+			{":", "Go to path"},
 			{"Tab / Shift+Tab", "Switch active panel"},
 		}},
 		{"File Operations", []helpItem{
