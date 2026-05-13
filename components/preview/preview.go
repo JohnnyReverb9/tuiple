@@ -2,11 +2,13 @@
 package preview
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -32,6 +34,14 @@ type ContentLoadedMsg struct {
 	IsAudio   bool // true when file is an audio file
 	AudioMeta mediarender.AudioInfo
 	Info      FileInfo
+}
+
+// DirSizeComputedMsg is delivered after a recursive directory-size walk
+// finishes. The preview model updates info.Size if the panel is still
+// showing the same directory; otherwise the result is silently ignored.
+type DirSizeComputedMsg struct {
+	Path string
+	Size int64
 }
 
 // AudioTickMsg fires every second while audio is playing to update elapsed time.
@@ -95,7 +105,20 @@ func (m *Model) SetFocused(f bool) { m.focused = f }
 // LoadFile returns a tea.Cmd that reads a file/dir asynchronously.
 // It passes the current panel dimensions so media can be rendered at
 // the correct size.
+//
+// For directories the recursive size walk (which can take dozens of
+// seconds on multi-GB trees) is deferred: LoadFile only emits the
+// immediate metadata + child-list ContentLoadedMsg, and the Update
+// handler for that message kicks off the size walk afterwards. Doing
+// it this way guarantees that ContentLoadedMsg lands before any
+// DirSizeComputedMsg, so the final size is never clobbered by the
+// initial metadata when the walk happens to finish first (which is
+// always the case for small directories).
 func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
+	if entry.IsDir {
+		return m.loadDirImmediate(entry)
+	}
+
 	previewW := m.width
 	previewH := m.height
 	return func() tea.Msg {
@@ -104,28 +127,6 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 			Size:    entry.Size,
 			ModTime: filesystem.FormatTime(entry.ModTime),
 			Perms:   entry.Mode.String(),
-		}
-
-		// ── Directory preview ──────────────────────────────────────
-		if entry.IsDir {
-			info.Items = filesystem.DirItemCount(entry.Path)
-			entries, _ := filesystem.ReadDir(entry.Path, false)
-			var lines []string
-			for i, e := range entries {
-				if i >= 20 {
-					lines = append(lines, fmt.Sprintf("  … and %d more", len(entries)-20))
-					break
-				}
-				name := e.Name
-				if e.IsDir {
-					name += "/"
-				}
-				lines = append(lines, "  "+name)
-			}
-			return ContentLoadedMsg{
-				Path: entry.Path, Content: strings.Join(lines, "\n"),
-				IsDir: true, Info: info,
-			}
 		}
 
 		// ── Media preview (images, video, PDF, audio) ───────────────
@@ -208,6 +209,73 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 	}
 }
 
+// loadDirImmediate produces the synchronous part of a directory preview:
+// metadata, item count, and the first 20 child names. info.Size is set to
+// -1 as a sentinel meaning "recursive size is being computed".
+func (m Model) loadDirImmediate(entry filesystem.FileEntry) tea.Cmd {
+	return func() tea.Msg {
+		info := FileInfo{
+			Name:    entry.Name,
+			Size:    -1, // sentinel: "calculating…"
+			ModTime: filesystem.FormatTime(entry.ModTime),
+			Perms:   entry.Mode.String(),
+			Items:   filesystem.DirItemCount(entry.Path),
+		}
+		entries, _ := filesystem.ReadDir(entry.Path, false)
+		var lines []string
+		for i, e := range entries {
+			if i >= 20 {
+				lines = append(lines, fmt.Sprintf("  … and %d more", len(entries)-20))
+				break
+			}
+			name := e.Name
+			if e.IsDir {
+				name += "/"
+			}
+			lines = append(lines, "  "+name)
+		}
+		return ContentLoadedMsg{
+			Path: entry.Path, Content: strings.Join(lines, "\n"),
+			IsDir: true, Info: info,
+		}
+	}
+}
+
+// dirSizeGen is bumped every time a new directory size walk is requested.
+// Each running walk captures the generation it was started with and bails
+// out early when it sees the global counter has moved on — that way a
+// long walk for a 17 GB folder doesn't keep eating CPU after the user
+// has navigated to a different directory.
+var dirSizeGen atomic.Int64
+
+// computeDirSize runs the recursive size walk in the background and emits
+// the total via DirSizeComputedMsg. If a newer walk starts before this
+// one finishes, the walk aborts early and emits Size = -1 (which the
+// receiver will ignore because the path no longer matches anyway).
+func computeDirSize(path string) tea.Cmd {
+	myGen := dirSizeGen.Add(1)
+	return func() tea.Msg {
+		var total int64
+		var stopped = errors.New("stopped")
+		_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+			if dirSizeGen.Load() != myGen {
+				return stopped // a newer walk superseded us
+			}
+			if err != nil {
+				return nil // skip unreadable entries
+			}
+			if info.Mode().IsRegular() {
+				total += info.Size()
+			}
+			return nil
+		})
+		if dirSizeGen.Load() != myGen {
+			return nil // ignored on arrival anyway, save a roundtrip
+		}
+		return DirSizeComputedMsg{Path: path, Size: total}
+	}
+}
+
 // ── Update ─────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
@@ -226,6 +294,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.isAudio = msg.IsAudio
 		m.audioMeta = msg.AudioMeta
 		m.scrollOffset = 0
+		// For directories, fire the recursive-size walk now that we
+		// know the preview is settled on this path. Doing it here
+		// guarantees DirSizeComputedMsg can never arrive before the
+		// ContentLoadedMsg that creates the dir preview, so the size
+		// update never gets overwritten by stale metadata.
+		if msg.IsDir {
+			return m, computeDirSize(msg.Path)
+		}
+		return m, nil
+
+	case DirSizeComputedMsg:
+		// Only adopt the size if we're still showing the directory it
+		// was computed for; otherwise the user navigated away during
+		// the walk and the result is stale.
+		if m.isDir && m.path == msg.Path {
+			m.info.Size = msg.Size
+		}
 		return m, nil
 
 	case AudioSeekFinishedMsg:
@@ -473,9 +558,15 @@ func (m Model) View() string {
 	title := theme.PreviewTitle.Render(m.info.Name)
 	sections = append(sections, title)
 
-	// Metadata
+	// Metadata. For dirs whose recursive size is still being computed
+	// (sentinel -1), show "calculating…" so the user knows the value
+	// will update shortly instead of being permanently bogus.
+	sizeStr := filesystem.FormatSize(m.info.Size)
+	if m.isDir && m.info.Size < 0 {
+		sizeStr = "calculating…"
+	}
 	infoLines := []string{
-		theme.PreviewInfo.Render(fmt.Sprintf("Size:  %s", filesystem.FormatSize(m.info.Size))),
+		theme.PreviewInfo.Render(fmt.Sprintf("Size:  %s", sizeStr)),
 		theme.PreviewInfo.Render(fmt.Sprintf("Date:  %s", m.info.ModTime)),
 		theme.PreviewInfo.Render(fmt.Sprintf("Perms: %s", m.info.Perms)),
 	}

@@ -170,6 +170,24 @@ func DirItemCount(path string) int {
 	return len(entries)
 }
 
+// DirSize returns the recursive sum of all regular file sizes inside path.
+// Symbolic links are not followed (we count the size of the link target's
+// dentry, not what it points to) and unreadable subtrees are silently
+// skipped so a single permission error doesn't sabotage the total.
+func DirSize(path string) int64 {
+	var total int64
+	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries, keep walking
+		}
+		if info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
 // ── Path helpers ───────────────────────────────────────────────────────
 
 // HomeDir returns the current user's home directory.

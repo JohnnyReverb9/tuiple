@@ -709,6 +709,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview, cmd = m.preview.Update(msg)
 		return m, cmd
 
+	// ── Directory size walk finished (delivered later than the
+	//    initial ContentLoadedMsg for the same path) ───────────────
+	case preview.DirSizeComputedMsg:
+		var cmd tea.Cmd
+		m.preview, cmd = m.preview.Update(msg)
+		return m, cmd
+
 	// ── Audio tick / seek routed regardless of active panel ────────
 	case preview.AudioTickMsg:
 		var cmd tea.Cmd
