@@ -461,8 +461,12 @@ func Push(repo string) (string, error) {
 	if err == nil {
 		return out, nil
 	}
-	if !strings.Contains(out, "has no upstream branch") &&
-		!strings.Contains(out, "set-upstream") {
+	// Inspect both the combined output and the wrapped error text — git
+	// puts the "no upstream branch" hint on stderr, and runWithOutput
+	// rolls that into the error message too.
+	haystack := out + "\n" + err.Error()
+	if !strings.Contains(haystack, "has no upstream branch") &&
+		!strings.Contains(haystack, "set-upstream") {
 		return out, err
 	}
 	branch, berr := CurrentBranch(repo)
