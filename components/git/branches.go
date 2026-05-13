@@ -228,14 +228,39 @@ func (m *BranchesPopup) doDelete(force bool) {
 	if !ok {
 		return
 	}
+
+	// Remote branch → push --delete on the remote, not `git branch -d`.
 	if b.IsRemote {
-		m.setStatus("use a remote tool to delete remote branches", true)
+		out, err := DeleteRemoteBranch(m.repo, b.Name)
+		if err != nil {
+			if out != "" {
+				m.setStatus(strings.TrimSpace(out), true)
+			} else {
+				m.setStatus(err.Error(), true)
+			}
+			return
+		}
+		m.setStatus("deleted remote "+b.Name, false)
+		m.reload()
 		return
 	}
+
+	// Currently checked-out branch → switch away first, then delete.
+	// Without this `git branch -d` fails with "cannot delete branch
+	// checked out at …". We pick the first other local branch (preferring
+	// main/master/develop) as the temporary checkout target.
 	if b.IsCurrent {
-		m.setStatus("cannot delete the current branch", true)
-		return
+		target := m.pickFallbackBranch(b.Name)
+		if target == "" {
+			m.setStatus("cannot delete the only local branch", true)
+			return
+		}
+		if err := Switch(m.repo, target); err != nil {
+			m.setStatus("switch to "+target+": "+err.Error(), true)
+			return
+		}
 	}
+
 	if err := DeleteBranch(m.repo, b.Name, force); err != nil {
 		if !force && strings.Contains(err.Error(), "not fully merged") {
 			m.pending = pendingForceDelete
@@ -248,6 +273,26 @@ func (m *BranchesPopup) doDelete(force bool) {
 	}
 	m.setStatus("deleted "+b.Name, false)
 	m.reload()
+}
+
+// pickFallbackBranch returns the name of a local branch to check out
+// before deleting `avoid`. Prefers main / master / develop over an
+// arbitrary other branch so the user lands somewhere sensible.
+func (m *BranchesPopup) pickFallbackBranch(avoid string) string {
+	prefer := []string{"main", "master", "develop"}
+	for _, name := range prefer {
+		for _, b := range m.branches {
+			if !b.IsRemote && b.Name == name && name != avoid {
+				return name
+			}
+		}
+	}
+	for _, b := range m.branches {
+		if !b.IsRemote && b.Name != avoid {
+			return b.Name
+		}
+	}
+	return ""
 }
 
 func (m *BranchesPopup) doMerge() {
