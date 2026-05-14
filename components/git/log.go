@@ -18,16 +18,22 @@ type logInputMode int
 const (
 	logInputNone logInputMode = iota
 	logInputBranchName
+	logInputFilter // `/` filter over subject / author / SHA
 )
 
 // logTab holds all state for the Log tab.
 type logTab struct {
 	commits     []Commit
-	cursor      int
+	cursor      int // index into the *visible* list (filtered when filter is active)
 	detail      string
 	detailLines []string
 	detailSHA   string
 	detailOff   int
+
+	// Filter state — when filter != "" only commits matching it are
+	// shown; filtered holds their indexes into `commits`.
+	filter   string
+	filtered []int
 
 	status    string
 	statusErr bool
@@ -38,6 +44,58 @@ type logTab struct {
 	// reset flow: 0=none, 1=pick mode (s/m/h), 2=confirm (y/n)
 	resetStep int
 	resetMode string // "soft", "mixed", "hard"
+}
+
+// visibleCount returns the number of currently visible commits in the
+// list (the full commit list when no filter is active, or the count of
+// matches when filtering).
+func (l *logTab) visibleCount() int {
+	if l.filter != "" {
+		return len(l.filtered)
+	}
+	return len(l.commits)
+}
+
+// commitAt translates a visible-list index to the underlying commit. The
+// returned bool is false when the index is out of range.
+func (l *logTab) commitAt(i int) (Commit, bool) {
+	if i < 0 {
+		return Commit{}, false
+	}
+	if l.filter != "" {
+		if i >= len(l.filtered) {
+			return Commit{}, false
+		}
+		return l.commits[l.filtered[i]], true
+	}
+	if i >= len(l.commits) {
+		return Commit{}, false
+	}
+	return l.commits[i], true
+}
+
+// applyLogFilter rebuilds the `filtered` slice from the current filter
+// string.  Matching is case-insensitive against subject, author and the
+// short SHA so the user can recall a commit by any of those.
+func (l *logTab) applyLogFilter() {
+	if l.filter == "" {
+		l.filtered = nil
+		return
+	}
+	needle := strings.ToLower(l.filter)
+	out := make([]int, 0, len(l.commits))
+	for i, c := range l.commits {
+		if strings.Contains(strings.ToLower(c.Subject), needle) ||
+			strings.Contains(strings.ToLower(c.Author), needle) ||
+			strings.Contains(strings.ToLower(c.ShortSHA), needle) ||
+			strings.Contains(strings.ToLower(c.Hash), needle) {
+			out = append(out, i)
+		}
+	}
+	l.filtered = out
+	if l.cursor >= len(out) {
+		l.cursor = max(0, len(out)-1)
+	}
 }
 
 func newLogTab() logTab {
@@ -54,29 +112,30 @@ func (m *Model) reloadLog() {
 	if m.root == "" {
 		return
 	}
-	commits, err := Log(m.root, 200)
+	commits, err := Log(m.root, 500)
 	if err != nil {
 		m.log.status = "log: " + err.Error()
 		m.log.statusErr = true
 		return
 	}
 	m.log.commits = commits
-	if m.log.cursor >= len(commits) {
-		m.log.cursor = max(0, len(commits)-1)
+	m.log.applyLogFilter()
+	if m.log.cursor >= m.log.visibleCount() {
+		m.log.cursor = max(0, m.log.visibleCount()-1)
 	}
 	m.log.detailSHA = ""
 	m.refreshLogDetail()
 }
 
 func (m *Model) refreshLogDetail() {
-	if len(m.log.commits) == 0 {
+	c, ok := m.log.commitAt(m.log.cursor)
+	if !ok {
 		m.log.detail = ""
 		m.log.detailLines = nil
 		m.log.detailSHA = ""
 		m.log.detailOff = 0
 		return
 	}
-	c := m.log.commits[m.log.cursor]
 	if c.Hash == m.log.detailSHA {
 		return
 	}
@@ -92,10 +151,7 @@ func (m *Model) refreshLogDetail() {
 }
 
 func (m *Model) logCurrent() (Commit, bool) {
-	if len(m.log.commits) == 0 || m.log.cursor >= len(m.log.commits) {
-		return Commit{}, false
-	}
-	return m.log.commits[m.log.cursor], true
+	return m.log.commitAt(m.log.cursor)
 }
 
 func (m *Model) logCherryPick() {
@@ -174,11 +230,31 @@ func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
 		}
 		return m, nil, true
 	case "down", "j":
-		if m.log.cursor < len(m.log.commits)-1 {
+		if m.log.cursor < m.log.visibleCount()-1 {
 			m.log.cursor++
 			m.refreshLogDetail()
 		}
 		return m, nil, true
+	case "/":
+		// Enter filter mode — type to narrow the commit list by
+		// subject, author or SHA.
+		m.log.inputMode = logInputFilter
+		m.log.input.SetValue(m.log.filter)
+		m.log.input.Placeholder = "filter subject / author / sha"
+		m.log.input.CursorEnd()
+		return m, m.log.input.Focus(), true
+	case "esc":
+		// Esc outside of input mode clears an active filter.
+		if m.log.filter != "" {
+			m.log.filter = ""
+			m.log.applyLogFilter()
+			m.log.cursor = 0
+			m.refreshLogDetail()
+			m.log.status = ""
+			m.log.statusErr = false
+			return m, nil, true
+		}
+		return m, nil, false
 	case "ctrl+d", "pgdown":
 		m.log.detailOff = clampOffset(m.log.detailOff+scrollStep, len(m.log.detailLines))
 		return m, nil, true
@@ -279,6 +355,14 @@ func (m Model) updateLogInput(msg tea.Msg) (Model, tea.Cmd, bool) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "esc":
+			// In filter mode Esc clears the filter outright; in other
+			// modes it just dismisses the prompt without committing.
+			if m.log.inputMode == logInputFilter {
+				m.log.filter = ""
+				m.log.applyLogFilter()
+				m.log.cursor = 0
+				m.refreshLogDetail()
+			}
 			m.log.inputMode = logInputNone
 			m.log.input.Blur()
 			return m, nil, true
@@ -290,12 +374,29 @@ func (m Model) updateLogInput(msg tea.Msg) (Model, tea.Cmd, bool) {
 			switch mode {
 			case logInputBranchName:
 				m.logCreateBranch(val)
+			case logInputFilter:
+				// Filter is already live-applied on each keystroke;
+				// Enter just dismisses the prompt and keeps it.
+				m.log.filter = val
+				m.log.applyLogFilter()
+				m.refreshLogDetail()
 			}
 			return m, nil, true
 		}
 	}
+	// Live-update the filter list on every keystroke so the result
+	// shrinks while the user is typing — matches filelist's `/` UX.
 	var cmd tea.Cmd
 	m.log.input, cmd = m.log.input.Update(msg)
+	if m.log.inputMode == logInputFilter {
+		newFilter := m.log.input.Value()
+		if newFilter != m.log.filter {
+			m.log.filter = newFilter
+			m.log.applyLogFilter()
+			m.log.cursor = 0
+			m.refreshLogDetail()
+		}
+	}
 	return m, cmd, true
 }
 
@@ -328,14 +429,24 @@ func (m Model) renderLogTab(w, h int) string {
 }
 
 func (m Model) renderLogList(w, h int) string {
-	header := theme.ListHeader.Width(w).Render("  Commits")
+	// Header shows the match count when a filter is active so the user
+	// always sees how many commits the current query catches.
+	headerText := "  Commits"
+	if m.log.filter != "" {
+		headerText = fmt.Sprintf("  Commits  %d / %d match", m.log.visibleCount(), len(m.log.commits))
+	}
+	header := theme.ListHeader.Width(w).Render(headerText)
 
 	lines := []string{header}
-	if len(m.log.commits) == 0 {
+	total := m.log.visibleCount()
+	switch {
+	case len(m.log.commits) == 0:
 		lines = append(lines, theme.Dim.Render("  (no commits)"))
-	} else {
+	case total == 0:
+		lines = append(lines, theme.Dim.Render("  (no matches)"))
+	default:
 		visible := max(1, h-1)
-		start, end := windowAround(m.log.cursor, len(m.log.commits), visible)
+		start, end := windowAround(m.log.cursor, total, visible)
 		for i := start; i < end; i++ {
 			lines = append(lines, m.renderLogItem(i, w))
 		}
@@ -344,7 +455,10 @@ func (m Model) renderLogList(w, h int) string {
 }
 
 func (m Model) renderLogItem(i, w int) string {
-	c := m.log.commits[i]
+	c, ok := m.log.commitAt(i)
+	if !ok {
+		return strings.Repeat(" ", w)
+	}
 	isCursor := i == m.log.cursor
 
 	apply := func(s lipgloss.Style) lipgloss.Style {
@@ -424,12 +538,25 @@ func (m Model) renderLogDetail(w, h int) string {
 
 func (m Model) renderLogStatus(w int) string {
 	if m.log.inputMode != logInputNone {
-		label := " Branch name: "
+		var label, hint string
+		switch m.log.inputMode {
+		case logInputFilter:
+			label = " Filter: "
+			hint = "    Enter to keep · Esc to clear"
+		default:
+			label = " Branch name: "
+			hint = "    Enter to create · Esc to cancel"
+		}
 		return lipgloss.NewStyle().
 			Foreground(theme.AccentYellow).
 			Bold(true).
 			Width(w).
-			Render(label + m.log.input.View() + theme.Dim.Render("    Enter to create · Esc to cancel"))
+			Render(label + m.log.input.View() + theme.Dim.Render(hint))
+	}
+	// When a filter is active but the prompt is dismissed, surface the
+	// active query so the user remembers what's filtering the list.
+	if m.log.filter != "" && m.log.status == "" {
+		return theme.Dim.Width(w).Render(fmt.Sprintf(" filter: %q  (press / to edit · Esc to clear)", m.log.filter))
 	}
 	if m.log.status == "" {
 		return strings.Repeat(" ", w)

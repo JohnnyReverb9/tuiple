@@ -1413,6 +1413,8 @@ func (m Model) renderHelp() string {
 	gitRight := []helpCat{
 		{"Log tab", []helpItem{
 			{"↑ ↓  /  k j", "Navigate commits"},
+			{"/", "Filter by subject / author / SHA"},
+			{"Esc", "Clear active filter"},
 			{"r", "Reset HEAD here (soft/mixed/hard)"},
 			{"c / v", "Cherry-pick / Revert"},
 			{"b", "Create branch from commit"},
