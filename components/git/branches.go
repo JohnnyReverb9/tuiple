@@ -52,11 +52,18 @@ type BranchesPopup struct {
 	input     textinput.Model
 	inputMode branchesInputMode
 
-	pending      pendingConfirm
-	pendingName  string // branch the pending op targets
+	pending     pendingConfirm
+	pendingName string // branch the pending op targets
 
 	status    string
 	statusErr bool
+
+	// busy is set while an async push/pull/fetch goroutine is in flight.
+	// All branch-mutating keys (P/p/F, n, d/D, r, m, R, Enter, etc.) are
+	// no-ops in this state so we never end up with two `git` processes
+	// fighting for .git/index.lock. Navigation, filter, and closing the
+	// popup remain available.
+	busy string // "" when idle, otherwise "Pushing" / "Pulling" / "Fetching"
 
 	width  int
 	height int
@@ -88,6 +95,7 @@ func (m *BranchesPopup) Start(path string) tea.Cmd {
 	m.statusErr = false
 	m.pending = pendingNone
 	m.pendingName = ""
+	m.busy = ""
 	m.inputMode = branchesInputNone
 	m.input.Blur()
 
@@ -321,34 +329,42 @@ func (m *BranchesPopup) doRebase() {
 	m.reload()
 }
 
-func (m *BranchesPopup) doPush() {
-	out, err := Push(m.repo)
-	if err != nil {
-		m.setStatus(shortGitError(err), true)
-		return
-	}
-	m.setStatus(parsePushOutput(out), false)
-	m.reload()
+// pushDoneMsg / pullDoneMsg / fetchDoneMsg deliver the result of an async
+// git operation back to the BranchesPopup's Update loop. The transient
+// "Pushing..." / "Pulling..." / "Fetching..." status set before issuing
+// the command stays on screen until the corresponding done-message lands.
+type pushDoneMsg struct {
+	out string
+	err error
+}
+type pullDoneMsg struct {
+	out string
+	err error
+}
+type fetchDoneMsg struct {
+	out string
+	err error
 }
 
-func (m *BranchesPopup) doPull() {
-	out, err := Pull(m.repo)
-	if err != nil {
-		m.setStatus(shortGitError(err), true)
-		return
+func pushCmd(repo string) tea.Cmd {
+	return func() tea.Msg {
+		out, err := Push(repo)
+		return pushDoneMsg{out: out, err: err}
 	}
-	m.setStatus(parsePullOutput(out), false)
-	m.reload()
 }
 
-func (m *BranchesPopup) doFetch() {
-	out, err := Fetch(m.repo)
-	if err != nil {
-		m.setStatus(shortGitError(err), true)
-		return
+func pullCmd(repo string) tea.Cmd {
+	return func() tea.Msg {
+		out, err := Pull(repo)
+		return pullDoneMsg{out: out, err: err}
 	}
-	m.setStatus(parseFetchOutput(out), false)
-	m.reload()
+}
+
+func fetchCmd(repo string) tea.Cmd {
+	return func() tea.Msg {
+		out, err := Fetch(repo)
+		return fetchDoneMsg{out: out, err: err}
+	}
 }
 
 // ── Output parsers ────────────────────────────────────────────────────
@@ -475,6 +491,41 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 		return m, nil
 	}
 
+	// Async git operation results — these can arrive while the user is
+	// in any mode (filter, pending confirm, regular nav), so they live
+	// outside the keyMsg switch below. The busy flag is cleared here so
+	// the user-visible "Pushing…" lock is released exactly when the
+	// underlying git command has finished.
+	switch r := msg.(type) {
+	case pushDoneMsg:
+		m.busy = ""
+		if r.err != nil {
+			m.setStatus(shortGitError(r.err), true)
+		} else {
+			m.setStatus(parsePushOutput(r.out), false)
+			m.reload()
+		}
+		return m, func() tea.Msg { return BranchesChangedMsg{} }
+	case pullDoneMsg:
+		m.busy = ""
+		if r.err != nil {
+			m.setStatus(shortGitError(r.err), true)
+		} else {
+			m.setStatus(parsePullOutput(r.out), false)
+			m.reload()
+		}
+		return m, func() tea.Msg { return BranchesChangedMsg{} }
+	case fetchDoneMsg:
+		m.busy = ""
+		if r.err != nil {
+			m.setStatus(shortGitError(r.err), true)
+		} else {
+			m.setStatus(parseFetchOutput(r.out), false)
+			m.reload()
+		}
+		return m, func() tea.Msg { return BranchesChangedMsg{} }
+	}
+
 	if m.inputMode != branchesInputNone {
 		return m.updateInput(msg)
 	}
@@ -486,6 +537,35 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	// While a long-running git op is in flight, block every key that would
+	// mutate the repo so we don't start a second `git` process fighting
+	// for .git/index.lock. Esc, navigation, filter and reload stay live.
+	if m.busy != "" {
+		switch keyMsg.String() {
+		case "esc", "ctrl+c", "ctrl+b":
+			m.Stop()
+			return m, nil
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+			return m, nil
+		case "down", "j":
+			if m.cursor < m.visibleCount()-1 {
+				m.cursor++
+			}
+			return m, nil
+		case "/":
+			m.inputMode = branchesInputFilter
+			m.input.SetValue(m.filter)
+			m.input.Placeholder = "filter branches"
+			return m, m.input.Focus()
+		}
+		// Anything else: remind the user we are still working.
+		m.setStatus(m.busy+"… please wait", false)
+		return m, nil
+	}
+
 	switch keyMsg.String() {
 	case "esc", "ctrl+c", "ctrl+b":
 		m.Stop()
@@ -547,14 +627,17 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 		m.setStatus("reloaded", false)
 		return m, nil
 	case "P":
-		m.doPush()
-		return m, func() tea.Msg { return BranchesChangedMsg{} }
+		m.busy = "Pushing"
+		m.setStatus("Pushing…", false)
+		return m, pushCmd(m.repo)
 	case "p":
-		m.doPull()
-		return m, func() tea.Msg { return BranchesChangedMsg{} }
+		m.busy = "Pulling"
+		m.setStatus("Pulling…", false)
+		return m, pullCmd(m.repo)
 	case "F":
-		m.doFetch()
-		return m, func() tea.Msg { return BranchesChangedMsg{} }
+		m.busy = "Fetching"
+		m.setStatus("Fetching…", false)
+		return m, fetchCmd(m.repo)
 	}
 	return m, nil
 }

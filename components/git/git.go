@@ -259,7 +259,7 @@ func (m Model) renderBody(w, h int) string {
 }
 
 func (m Model) renderFooter(w int) string {
-	hint := " Tab/Shift+Tab switch · 1/2/3 jump · / filter · Esc close "
+	hint := " Tab/Shift+Tab switch · 1/2/3 jump · Esc close "
 	return lipgloss.NewStyle().
 		Foreground(theme.FgDimColor).
 		Background(theme.BgDarkColor).
