@@ -1,0 +1,93 @@
+# ─── tuiple build ─────────────────────────────────────────────────────
+#
+# Quick start:
+#   make            # local debug build → ./tuiple
+#   make install    # build + copy to $(BIN) (defaults to ~/.local/bin/tuiple)
+#   make install BIN=/usr/local/bin/tuiple
+#   make run        # build + run from project root
+#   make dev        # `go run .` (no binary)
+#   make test       # `go test ./...`
+#   make clean      # remove built binaries
+#   make help       # show this list
+#
+# Override the install path three ways:
+#   make install BIN=/path/to/tuiple                          # one-off
+#   echo 'BIN := $$(HOME)/tprogs/tuiple' > Makefile.local     # persistent, untracked
+#   export BIN=/path/to/tuiple                                # shell env
+# ──────────────────────────────────────────────────────────────────────
+
+# Pull in a private, untracked Makefile.local first so it can set its own
+# BIN (or any other variable) without forcing you to edit the tracked
+# Makefile. The leading dash makes the include silent when the file is
+# absent.
+-include Makefile.local
+
+# Default install target. ~/.local/bin is on PATH for most modern shells
+# and doesn't require sudo; override with `make install BIN=...` to put
+# the binary somewhere else.
+BIN  ?= $(HOME)/.local/bin/tuiple
+
+# Local build artefact (project root).
+NAME := tuiple
+
+# Inject version metadata into the binary so `tuiple --version` (if you
+# add such a flag later) can report it. Falls back gracefully when not
+# inside a git checkout.
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILT   := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+LDFLAGS := -s -w \
+	-X 'main.version=$(VERSION)' \
+	-X 'main.commit=$(COMMIT)' \
+	-X 'main.built=$(BUILT)'
+
+GO_BUILD := go build -trimpath -ldflags "$(LDFLAGS)"
+
+.PHONY: all build install run dev test vet fmt clean uninstall help
+
+all: build
+
+# Local build to ./tuiple — handy for testing without polluting $PATH.
+build:
+	@$(GO_BUILD) -o $(NAME) .
+	@echo "✓ built ./$(NAME)  ($(VERSION))"
+
+# Build straight to $(BIN). Creates the parent directory if it doesn't
+# exist yet (-p) so a fresh checkout works out of the box.
+install:
+	@mkdir -p $(dir $(BIN))
+	@$(GO_BUILD) -o $(BIN) .
+	@echo "✓ installed → $(BIN)  ($(VERSION))"
+	@case "$$PATH" in \
+	  *$(dir $(BIN))*) ;; \
+	  *) echo "⚠ $(dir $(BIN)) is not on \$$PATH — add it to your shell rc to run \`tuiple\` from anywhere." ;; \
+	esac
+
+# Build + run the freshly built binary on the current directory.
+run: build
+	@./$(NAME)
+
+# Skip the artefact entirely — useful for quick iteration.
+dev:
+	@go run . $(ARGS)
+
+test:
+	@go test ./...
+
+vet:
+	@go vet ./...
+
+fmt:
+	@gofmt -w -s .
+
+clean:
+	@rm -f $(NAME)
+	@echo "✓ removed ./$(NAME)"
+
+uninstall:
+	@rm -f $(BIN)
+	@echo "✓ removed $(BIN)"
+
+help:
+	@grep -E '^[a-zA-Z_-]+:.*$$' $(MAKEFILE_LIST) | awk -F: '{ printf "  %-12s %s\n", $$1, $$2 }'
