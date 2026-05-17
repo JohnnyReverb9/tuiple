@@ -9,11 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-
 	"tuiple/bookmarks"
 	"tuiple/clipboard"
 	"tuiple/components/filelist"
@@ -24,6 +19,10 @@ import (
 	"tuiple/components/sidebar"
 	"tuiple/filesystem"
 	"tuiple/theme"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type deleteTickMsg struct{}
@@ -1378,7 +1377,7 @@ func (m Model) renderHelp() string {
 			{"r", "Rename"},
 			{"n / N", "New File / New Directory"},
 			{"u / U", "Undo / Redo"},
-			{"Y", "Show action history (read-only)"},
+			{"Y", "Show action history"},
 		}},
 	}
 	sysRight := []helpCat{

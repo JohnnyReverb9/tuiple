@@ -122,13 +122,25 @@ func CleanupPendingDeletes() {
 	pendingDeletes = make(map[string]pendingDelete)
 }
 
+// maxUndoStack bounds the in-memory undo stack so a very long session
+// (tuiple used as a primary file manager all day) can't drift into
+// pathological memory use. Excess entries are dropped from the bottom
+// (oldest) so the most recent N actions are always undoable. The audit
+// log keeps the long-term record.
+const maxUndoStack = 500
+
 func PushHistory(ev HistoryEvent) {
 	if ev.When.IsZero() {
 		ev.When = time.Now()
 	}
 	undoStack = append(undoStack, ev)
+	if len(undoStack) > maxUndoStack {
+		// Drop the oldest entries; keep the most recent maxUndoStack.
+		undoStack = append(undoStack[:0], undoStack[len(undoStack)-maxUndoStack:]...)
+	}
 	// Clear redo stack on new action
 	redoStack = nil
+	AppendAudit(ev, AuditSourceUser)
 }
 
 // HistorySnapshot returns copies of the undo and redo stacks for read-only
@@ -156,6 +168,14 @@ func Undo() (string, error) {
 	}
 
 	redoStack = append(redoStack, ev)
+	// Record the reversal in the audit log so future "where did that
+	// file go" lookups see the file's true final location, not just the
+	// original action that was later undone. We log a fresh event with
+	// the current timestamp; the original op is preserved so the reader
+	// can see what was undone, and source=undo signals the direction.
+	audit := ev
+	audit.When = time.Now()
+	AppendAudit(audit, AuditSourceUndo)
 	return fmt.Sprintf("Undid %s", ev.Op), nil
 }
 
@@ -173,6 +193,9 @@ func Redo() (string, error) {
 	}
 
 	undoStack = append(undoStack, ev)
+	audit := ev
+	audit.When = time.Now()
+	AppendAudit(audit, AuditSourceRedo)
 	return fmt.Sprintf("Redid %s", ev.Op), nil
 }
 
