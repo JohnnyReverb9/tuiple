@@ -216,7 +216,7 @@ func (m Model) loadDirImmediate(entry filesystem.FileEntry) tea.Cmd {
 	return func() tea.Msg {
 		info := FileInfo{
 			Name:    entry.Name,
-			Size:    -1, // sentinel: "calculating…"
+			Size:    -1, // sentinel: "calculating..."
 			ModTime: filesystem.FormatTime(entry.ModTime),
 			Perms:   entry.Mode.String(),
 			Items:   filesystem.DirItemCount(entry.Path),
@@ -225,7 +225,7 @@ func (m Model) loadDirImmediate(entry filesystem.FileEntry) tea.Cmd {
 		var lines []string
 		for i, e := range entries {
 			if i >= 20 {
-				lines = append(lines, fmt.Sprintf("  … and %d more", len(entries)-20))
+				lines = append(lines, fmt.Sprintf("  ... and %d more", len(entries)-20))
 				break
 			}
 			name := e.Name
@@ -559,11 +559,11 @@ func (m Model) View() string {
 	sections = append(sections, title)
 
 	// Metadata. For dirs whose recursive size is still being computed
-	// (sentinel -1), show "calculating…" so the user knows the value
+	// (sentinel -1), show "calculating..." so the user knows the value
 	// will update shortly instead of being permanently bogus.
 	sizeStr := filesystem.FormatSize(m.info.Size)
 	if m.isDir && m.info.Size < 0 {
-		sizeStr = "calculating…"
+		sizeStr = "calculating..."
 	}
 	infoLines := []string{
 		theme.PreviewInfo.Render(fmt.Sprintf("Size:  %s", sizeStr)),

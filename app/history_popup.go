@@ -835,7 +835,7 @@ func truncateName(s string, w int) string {
 	if lipgloss.Width(s) <= w {
 		return s
 	}
-	// ASCII "..." instead of … so the truncation marker has a predictable
+	// ASCII "..." instead of ... so the truncation marker has a predictable
 	// 3-cell footprint on every terminal.
 	const marker = "..."
 	runes := []rune(s)

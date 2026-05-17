@@ -197,7 +197,7 @@ func (m Model) View() string {
 			} else {
 				var text string
 				if len(res.MatchedLine) > 60 {
-					text = res.MatchedLine[:60] + "…"
+					text = res.MatchedLine[:60] + "..."
 				} else {
 					text = res.MatchedLine
 				}

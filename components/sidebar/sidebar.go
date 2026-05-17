@@ -173,10 +173,12 @@ func (m Model) View() string {
 		for _, it := range s.items {
 			name := it.name
 
-			// Truncate if needed
+			// Truncate if needed. The "..." marker is 3 cells (it used to
+			// be a single-cell "…" but we standardised on ASCII), so we
+			// have to reserve 3 cells for it, not 1.
 			maxW := m.width - 2
-			if maxW > 0 && lipgloss.Width(name) > maxW {
-				name = name[:maxW-1] + "…"
+			if maxW > 3 && lipgloss.Width(name) > maxW {
+				name = name[:maxW-3] + "..."
 			}
 
 			// Pad to fill row

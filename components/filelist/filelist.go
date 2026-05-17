@@ -778,11 +778,11 @@ func truncate(s string, maxW int) string {
 	// Trim rune-by-rune until it fits (safe for Unicode)
 	runes := []rune(s)
 	for len(runes) > 0 {
-		candidate := string(runes[:len(runes)-1]) + "…"
+		candidate := string(runes[:len(runes)-1]) + "..."
 		if lipgloss.Width(candidate) <= maxW {
 			return candidate
 		}
 		runes = runes[:len(runes)-1]
 	}
-	return "…"
+	return "..."
 }

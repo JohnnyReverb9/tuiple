@@ -746,7 +746,7 @@ func renderDiffLine(raw string, w int) string {
 	return colored + strings.Repeat(" ", pad)
 }
 
-// truncatePlain shortens a plain string with "…" to fit `w` cells, without
+// truncatePlain shortens a plain string with "..." to fit `w` cells, without
 // padding to the right. It is intended for use inside cells whose width
 // is enforced by a lipgloss style (so the padding is themed). Returns ""
 // for w<=0.
@@ -759,7 +759,7 @@ func truncatePlain(s string, w int) string {
 	}
 	runes := []rune(s)
 	for len(runes) > 0 {
-		candidate := string(runes[:len(runes)-1]) + "…"
+		candidate := string(runes[:len(runes)-1]) + "..."
 		if lipgloss.Width(candidate) <= w {
 			return candidate
 		}
@@ -775,7 +775,7 @@ func truncateLine(s string, w int) string {
 	}
 	runes := []rune(s)
 	for len(runes) > 0 {
-		c := string(runes[:len(runes)-1]) + "…"
+		c := string(runes[:len(runes)-1]) + "..."
 		if lipgloss.Width(c) <= w {
 			return c + strings.Repeat(" ", w-lipgloss.Width(c))
 		}

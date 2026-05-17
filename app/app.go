@@ -784,7 +784,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if !m.ready {
-		return "\n  Loading tuiple…"
+		return "\n  Loading tuiple..."
 	}
 	if m.showHelp {
 		return m.renderHelp()
@@ -1191,7 +1191,7 @@ func completePath(typed, cwd string) string {
 }
 
 // uniqueDst returns dst unchanged when the path does not exist.
-// If dst already exists it inserts _1, _2, … before the extension (for
+// If dst already exists it inserts _1, _2, ... before the extension (for
 // files) or at the end (for directories) until an unused path is found.
 func uniqueDst(dst string, isDir bool) string {
 	if _, err := os.Stat(dst); os.IsNotExist(err) {

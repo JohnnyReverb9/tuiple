@@ -3,12 +3,11 @@ package git
 import (
 	"fmt"
 	"strings"
+	"tuiple/theme"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-	"tuiple/theme"
 )
 
 // BranchesChangedMsg is emitted by the popup after an operation that
@@ -255,7 +254,7 @@ func (m *BranchesPopup) doDelete(force bool) {
 
 	// Currently checked-out branch → switch away first, then delete.
 	// Without this `git branch -d` fails with "cannot delete branch
-	// checked out at …". We pick the first other local branch (preferring
+	// checked out at ...". We pick the first other local branch (preferring
 	// main/master/develop) as the temporary checkout target.
 	if b.IsCurrent {
 		target := m.pickFallbackBranch(b.Name)
@@ -494,7 +493,7 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 	// Async git operation results — these can arrive while the user is
 	// in any mode (filter, pending confirm, regular nav), so they live
 	// outside the keyMsg switch below. The busy flag is cleared here so
-	// the user-visible "Pushing…" lock is released exactly when the
+	// the user-visible "Pushing..." lock is released exactly when the
 	// underlying git command has finished.
 	switch r := msg.(type) {
 	case pushDoneMsg:
@@ -562,7 +561,7 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 			return m, m.input.Focus()
 		}
 		// Anything else: remind the user we are still working.
-		m.setStatus(m.busy+"… please wait", false)
+		m.setStatus(m.busy+"... please wait", false)
 		return m, nil
 	}
 
@@ -628,15 +627,15 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 		return m, nil
 	case "P":
 		m.busy = "Pushing"
-		m.setStatus("Pushing…", false)
+		m.setStatus("Pushing...", false)
 		return m, pushCmd(m.repo)
 	case "p":
 		m.busy = "Pulling"
-		m.setStatus("Pulling…", false)
+		m.setStatus("Pulling...", false)
 		return m, pullCmd(m.repo)
 	case "F":
 		m.busy = "Fetching"
-		m.setStatus("Fetching…", false)
+		m.setStatus("Fetching...", false)
 		return m, fetchCmd(m.repo)
 	}
 	return m, nil
