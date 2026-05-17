@@ -67,7 +67,9 @@ func (m BlamePopup) Update(msg tea.Msg) (BlamePopup, tea.Cmd) {
 		return m, nil
 	}
 	switch keyMsg.String() {
-	case "esc", "q":
+	case "esc":
+		// Esc only — q is reserved for quitting tuiple, matching the
+		// branches-popup convention.
 		m.Stop()
 	case "ctrl+d", "pgdown":
 		m.offset = clampOffset(m.offset+scrollStep, len(m.lines))

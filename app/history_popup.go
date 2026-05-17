@@ -100,7 +100,10 @@ func (h HistoryPopup) Update(msg tea.Msg) (HistoryPopup, tea.Cmd) {
 		return h, nil
 	}
 	switch keyMsg.String() {
-	case "esc", "q", "ctrl+c":
+	case "esc":
+		// Esc only — q is reserved for quitting tuiple from anywhere,
+		// and space/ctrl-anything aren't part of the popup-close
+		// convention used by the branches popup we are mirroring.
 		h.Stop()
 		return h, nil
 	case "up", "k":
@@ -119,7 +122,11 @@ func (h HistoryPopup) Update(msg tea.Msg) (HistoryPopup, tea.Cmd) {
 			}
 		}
 		return h, nil
-	case "enter", " ":
+	case "enter", "l":
+		// Same convention as branches popup: Enter or l opens / activates
+		// the row under the cursor. Space is left out so users can scroll
+		// through the list with the standard vim-style trio without ever
+		// accidentally toggling expansion.
 		h.expanded = !h.expanded
 		return h, nil
 	case "g":
@@ -146,39 +153,62 @@ func (h HistoryPopup) View() string {
 		return ""
 	}
 
-	border := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.AccentBlue).
-		Padding(0, 1)
+	// Match the branches-popup container layout exactly: border only,
+	// no padding. lipgloss's interaction between Padding() and Width()
+	// trims one cell off the content area in ways that interact poorly
+	// with the per-segment background, so we skip padding and instead
+	// add a single space at the start of each rendered line ourselves.
+	//
+	// `w` is the content width (what each row is sized to). Add +2 to
+	// the Border style's Width so the rounded border lands cleanly on
+	// the popup's outer dimensions.
+	w := h.width - 2 // borders eat 1 cell on each side
+	contentH := h.height - 2
 
-	innerW := h.width - 4 // padding + border
-	innerH := h.height - 2
+	var lines []string
+	lines = append(lines, padLine(lipgloss.NewStyle().
+		Foreground(theme.AccentBlue).Bold(true).Render(" History"), w))
+	lines = append(lines, padLine(theme.Dim.Render(
+		"   up/down navigate  |  Enter/l expand  |  Esc close   (u/U from main view to undo/redo)"), w))
+	lines = append(lines, padLine("", w))
 
-	title := lipgloss.NewStyle().
-		Foreground(theme.AccentBlue).
-		Bold(true).
-		Render(" ⟲  History")
-	hint := theme.Dim.Render(
-		"   ↑↓ navigate · Enter/Space expand · Esc close   (u/U from main view to undo/redo)")
-
-	var body []string
 	if len(h.rows) == 0 {
-		body = append(body, "")
-		body = append(body, theme.Dim.Render("  (no actions recorded this session)"))
+		lines = append(lines, padLine(theme.Dim.Render("  (no actions recorded this session)"), w))
 	} else {
-		// Render each row, taking expansion of the cursor row into account.
-		listH := innerH - 3 // title + hint + spacer
-		body = h.renderRows(innerW, listH)
+		listH := contentH - len(lines)
+		lines = append(lines, h.renderRows(w, listH)...)
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		title,
-		hint,
-		"",
-		strings.Join(body, "\n"),
-	)
+	// Pad to the full content height so the border closes at the right
+	// place regardless of how many rows we actually rendered.
+	blank := padLine("", w)
+	for len(lines) < contentH {
+		lines = append(lines, blank)
+	}
+	if len(lines) > contentH {
+		lines = lines[:contentH]
+	}
 
-	return border.Width(innerW).Height(innerH).Render(content)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.AccentBlue).
+		Render(strings.Join(lines, "\n"))
+}
+
+// padLine forces a pre-rendered ANSI string to exactly w visible cells —
+// padding short lines with spaces and truncating long lines with
+// lipgloss.MaxWidth. Centralising this here means every line sent to the
+// bordered container is the same width, which is what lipgloss needs to
+// keep the right-hand border aligned without word-wrapping.
+func padLine(s string, w int) string {
+	vw := lipgloss.Width(s)
+	if vw == w {
+		return s
+	}
+	if vw > w {
+		return lipgloss.NewStyle().MaxWidth(w).Render(s)
+	}
+	return s + strings.Repeat(" ", w-vw)
 }
 
 func (h HistoryPopup) renderRows(w, maxH int) []string {
@@ -189,8 +219,9 @@ func (h HistoryPopup) renderRows(w, maxH int) []string {
 		cursor := i == h.cursor
 		switch r.kind {
 		case rowSeparator:
-			lines = append(lines, "")
-			lines = append(lines, theme.Dim.Render(strings.Repeat("─", min(w, 40))+"  redo stack ↓"))
+			lines = append(lines, clampRowWidth("", w, false))
+			sep := theme.Dim.Render(strings.Repeat("-", min(w, 40)) + "  redo stack")
+			lines = append(lines, clampRowWidth(sep, w, false))
 		case rowUndo:
 			lines = append(lines, h.renderEvent(h.undo[r.idx], rowUndo, cursor, w))
 			if cursor && h.expanded {
@@ -226,47 +257,117 @@ func (h HistoryPopup) renderRows(w, maxH int) []string {
 }
 
 func (h HistoryPopup) renderEvent(ev HistoryEvent, kind histRowKind, cursor bool, w int) string {
-	// Op label with colour.
-	opColor := opTypeColor(ev.Op)
-	op := lipgloss.NewStyle().Foreground(opColor).Bold(true).Width(11).Render(string(ev.Op))
+	// ── Fixed-width slot budget ────────────────────────────────────────
+	//   prefix(2) + safety(1) + gap(1) + op(11) + gap(1) + name(nameW)
+	//   + gap(2) + when(whenW) = w
+	const (
+		prefixW = 2
+		safetyW = 1
+		opW     = 11
+		whenW   = 10
+		gaps    = 1 + 1 + 2 // gap after safety, after op, before when
+	)
+	fixed := prefixW + safetyW + opW + whenW + gaps
+	nameW := w - fixed
+	if nameW < 8 {
+		nameW = 8
+	}
 
-	// Primary file + count.
+	// applyBg ensures every visible cell of the row gets the selection
+	// background; otherwise lipgloss strips the bg at each inner reset
+	// and the highlight ends up patchy.
+	applyBg := func(s lipgloss.Style) lipgloss.Style {
+		if cursor {
+			return s.Background(theme.BgSelected)
+		}
+		return s
+	}
+
+	// Prefix (cursor caret or two-space placeholder). We deliberately use
+	// ASCII rather than ▸/▶/→ here: those triangles all have ambiguous
+	// East Asian Width and some terminals (incl. iTerm2 with default
+	// settings) render them as 2 cells, which would make every cursor
+	// row overflow the popup by one cell and visibly wrap.
+	var prefix string
+	if cursor {
+		prefix = applyBg(lipgloss.NewStyle().Foreground(theme.AccentYellow).Bold(true)).Render("> ")
+	} else {
+		prefix = applyBg(lipgloss.NewStyle()).Render("  ")
+	}
+
+	// Safety indicator — green plus or red cross. ASCII for the same
+	// reason as the prefix above (✓ and ✗ are also ambiguous-width).
+	safeOK := canRevert(ev)
+	safetyCh := "+"
+	safetyCol := theme.AccentGreen
+	if !safeOK {
+		safetyCh = "!"
+		safetyCol = theme.AccentRed
+	}
+	safety := applyBg(lipgloss.NewStyle().Foreground(safetyCol).Bold(true)).Render(safetyCh)
+
+	gap1 := applyBg(lipgloss.NewStyle()).Render(" ")
+	op := applyBg(lipgloss.NewStyle().Foreground(opTypeColor(ev.Op)).Bold(true).
+		Width(opW).MaxWidth(opW)).Render(string(ev.Op))
+	gap2 := applyBg(lipgloss.NewStyle()).Render(" ")
+
+	// Primary file + "+N more" suffix, jointly fitted into nameW cells.
 	primary, extra := summariseItems(ev.Items)
-	name := truncateName(primary, w-44)
-	count := ""
+	display := primary
 	if extra > 0 {
-		count = theme.Dim.Render(fmt.Sprintf(" +%d more", extra))
+		display = fmt.Sprintf("%s  +%d more", primary, extra)
 	}
+	name := applyBg(lipgloss.NewStyle()).Width(nameW).MaxWidth(nameW).
+		Render(truncateName(display, nameW))
 
-	// Safety indicator.
-	safety := h.safetyIndicator(ev)
+	gap3 := applyBg(lipgloss.NewStyle()).Render("  ")
+	when := applyBg(lipgloss.NewStyle().Foreground(theme.FgDimColor)).
+		Width(whenW).MaxWidth(whenW).Render(relTime(ev.When))
 
-	// Relative time.
-	when := theme.Dim.Render(relTime(ev.When))
+	line := prefix + safety + gap1 + op + gap2 + name + gap3 + when
 
-	// Compose.
-	prefix := "  "
+	// Final safety net: enforce exactly w visible cells. Without this,
+	// any character whose terminal-rendered cell count differs from
+	// lipgloss's expectation (e.g. ▸ or ✓ rendered as 2 cells by some
+	// terminals' ambiguous-width handling) makes the highlighted line
+	// overflow the popup's right border and wrap onto the next row.
+	return clampRowWidth(line, w, cursor)
+}
+
+// clampRowWidth pads or truncates a pre-rendered ANSI string so its
+// visible width is exactly w cells. The cursor flag tells us whether
+// the row is highlighted, in which case padding spaces also need the
+// selection background so the cursor stripe reaches the right edge.
+func clampRowWidth(line string, w int, cursor bool) string {
+	vw := lipgloss.Width(line)
+	if vw == w {
+		return line
+	}
+	if vw > w {
+		return lipgloss.NewStyle().MaxWidth(w).Render(line)
+	}
+	pad := strings.Repeat(" ", w-vw)
 	if cursor {
-		prefix = lipgloss.NewStyle().Foreground(theme.AccentYellow).Bold(true).Render("▸ ")
+		pad = lipgloss.NewStyle().Background(theme.BgSelected).Render(pad)
 	}
-
-	line := prefix + safety + " " + op + " " + name + count + "   " + when
-
-	if cursor {
-		line = lipgloss.NewStyle().Background(theme.BgSelected).Width(w).Render(line)
-	}
-	return line
+	return line + pad
 }
 
 func (h HistoryPopup) renderExpanded(ev HistoryEvent, w int) []string {
 	if len(ev.Items) == 0 {
 		return nil
 	}
+	// Indent so the bullet aligns with the file-name column of the row
+	// above (prefix(2) + safety(1) + gap(1) + op(11) + gap(1) = 16).
+	const indent = "                "
 	out := make([]string, 0, len(ev.Items))
+	bodyW := w - len(indent) - 2 // 2 for "• "
+	if bodyW < 8 {
+		bodyW = 8
+	}
 	for _, it := range ev.Items {
 		src := it.Src
 		dst := it.Dst
-		arrow := " → "
 		var body string
 		switch ev.Op {
 		case OpCreateFile, OpCreateDir:
@@ -275,25 +376,20 @@ func (h HistoryPopup) renderExpanded(ev HistoryEvent, w int) []string {
 			rem := softDeleteRemaining(dst)
 			tag := ""
 			if rem > 0 {
-				tag = theme.Dim.Render(fmt.Sprintf("  (purges in %ds)", int(rem.Seconds())))
+				tag = fmt.Sprintf("  (purges in %ds)", int(rem.Seconds()))
 			} else {
-				tag = theme.Dim.Render("  (purged)")
+				tag = "  (purged)"
 			}
 			body = "delete " + src + tag
 		default:
-			body = src + arrow + dst
+			body = src + " -> " + dst
 		}
-		out = append(out, "       "+theme.Dim.Render("• "+truncateName(body, w-9)))
+		// ASCII bullet — • (U+2022) is ambiguous-width and breaks our
+		// strict cell budget on terminals that render it as 2 cells.
+		line := indent + theme.Dim.Render("- "+truncateName(body, bodyW))
+		out = append(out, clampRowWidth(line, w, false))
 	}
 	return out
-}
-
-func (h HistoryPopup) safetyIndicator(ev HistoryEvent) string {
-	ok := canRevert(ev)
-	if ok {
-		return lipgloss.NewStyle().Foreground(theme.AccentGreen).Render("✓")
-	}
-	return lipgloss.NewStyle().Foreground(theme.AccentRed).Render("✗")
 }
 
 // canRevert checks whether revertEvent would currently succeed: the
@@ -395,13 +491,16 @@ func truncateName(s string, w int) string {
 	if lipgloss.Width(s) <= w {
 		return s
 	}
+	// ASCII "..." instead of … so the truncation marker has a predictable
+	// 3-cell footprint on every terminal.
+	const marker = "..."
 	runes := []rune(s)
 	for len(runes) > 0 {
-		c := string(runes[:len(runes)-1]) + "…"
+		c := string(runes[:len(runes)-1]) + marker
 		if lipgloss.Width(c) <= w {
 			return c
 		}
 		runes = runes[:len(runes)-1]
 	}
-	return "…"
+	return marker
 }
