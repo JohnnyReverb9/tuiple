@@ -30,6 +30,7 @@ type HistoryItem struct {
 type HistoryEvent struct {
 	Op    OpType
 	Items []HistoryItem
+	When  time.Time // when the action was recorded (PushHistory sets this)
 }
 
 var (
@@ -122,9 +123,23 @@ func CleanupPendingDeletes() {
 }
 
 func PushHistory(ev HistoryEvent) {
+	if ev.When.IsZero() {
+		ev.When = time.Now()
+	}
 	undoStack = append(undoStack, ev)
 	// Clear redo stack on new action
 	redoStack = nil
+}
+
+// HistorySnapshot returns copies of the undo and redo stacks for read-only
+// viewing (e.g. by the history popup). The returned slices are safe to
+// hold onto — they are not aliased to the live stacks.
+func HistorySnapshot() (undo, redo []HistoryEvent) {
+	undo = make([]HistoryEvent, len(undoStack))
+	copy(undo, undoStack)
+	redo = make([]HistoryEvent, len(redoStack))
+	copy(redo, redoStack)
+	return undo, redo
 }
 
 func Undo() (string, error) {

@@ -150,6 +150,7 @@ type Model struct {
 	branchesPopup    git.BranchesPopup
 	fileHistoryPopup git.FileHistoryPopup
 	blamePopup       git.BlamePopup
+	historyPopup     HistoryPopup
 	awaitingSort     bool
 
 	gitRoot        string
@@ -202,6 +203,7 @@ func New(startDir string) Model {
 		branchesPopup:    git.NewBranches(),
 		fileHistoryPopup: git.NewFileHistory(),
 		blamePopup:       git.NewBlame(),
+		historyPopup:     NewHistoryPopup(),
 		active:           panelFileList,
 		currentPath:      startDir,
 		lastDirMod:       lastMod,
@@ -258,6 +260,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(git.BranchesChangedMsg); ok {
 		m.refreshGit()
 		return m, nil
+	}
+
+	// ── Intercept History Popup ────────────────────────────────────
+	if m.historyPopup.IsActive() {
+		var cmd tea.Cmd
+		m.historyPopup, cmd = m.historyPopup.Update(msg)
+		return m, cmd
 	}
 
 	// ── Intercept Blame Popup ─────────────────────────────────────
@@ -429,6 +438,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput.SetValue("")
 			m.textInput.Placeholder = "Enter path..."
 			m.textInput.Focus()
+			return m, nil
+		case "Y":
+			m.historyPopup.Start()
 			return m, nil
 		case "f":
 			return m, m.searchOverlay.Start(search.ModeNameSearch, m.currentPath)
@@ -830,6 +842,13 @@ func (m Model) View() string {
 	if m.blamePopup.IsActive() {
 		m.blamePopup.SetSize(m.width*4/5, contentH*4/5)
 		overlay := m.blamePopup.View()
+		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+	}
+
+	// History Popup (read-only viewer over undo/redo stacks)
+	if m.historyPopup.IsActive() {
+		m.historyPopup.SetSize(m.width*4/5, contentH*4/5)
+		overlay := m.historyPopup.View()
 		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
 	}
 
@@ -1359,6 +1378,7 @@ func (m Model) renderHelp() string {
 			{"r", "Rename"},
 			{"n / N", "New File / New Directory"},
 			{"u / U", "Undo / Redo"},
+			{"Y", "Show action history (read-only)"},
 		}},
 	}
 	sysRight := []helpCat{
