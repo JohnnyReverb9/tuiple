@@ -579,8 +579,14 @@ func (h HistoryPopup) renderEvent(ev HistoryEvent, kind histRowKind, cursor bool
 		Render(truncateName(display, nameW))
 
 	gap3 := applyBg(lipgloss.NewStyle()).Render("  ")
+	// truncateName guarantees the content already fits whenW *before*
+	// lipgloss sees it. Without that guard, .Width(whenW) word-wraps any
+	// over-long timestamp (e.g. a 12-char "Jan 02 15:04") onto a second
+	// line — which then renders as a 2-line row that clampRowWidth can't
+	// detect, because lipgloss.Width of a multi-line string reports the
+	// widest single line, not the total.
 	when := applyBg(lipgloss.NewStyle().Foreground(theme.FgDimColor)).
-		Width(whenW).MaxWidth(whenW).Render(relTime(ev.When))
+		Width(whenW).MaxWidth(whenW).Render(truncateName(relTime(ev.When), whenW))
 
 	line := prefix + safety + gap1 + op + gap2 + name + gap3 + when
 
@@ -824,8 +830,13 @@ func relTime(t time.Time) string {
 		return fmt.Sprintf("%dm ago", int(d.Minutes()))
 	case d < 24*time.Hour:
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours())/24)
 	}
-	return t.Format("Jan 02 15:04")
+	// Compact date (no time-of-day) so the string stays within the
+	// session tab's narrow `when` slot. The All-time tab carries the full
+	// timestamp for anyone who needs the exact clock time.
+	return t.Format("Jan 02")
 }
 
 func truncateName(s string, w int) string {
