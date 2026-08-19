@@ -83,6 +83,10 @@ func (m *BranchesPopup) SetSize(w, h int) { m.width = w; m.height = h }
 // IsActive reports whether the popup is currently visible.
 func (m BranchesPopup) IsActive() bool { return m.active }
 
+// AcceptsText reports whether the popup's prompt (filter, new branch
+// name, rename) currently has the keyboard.
+func (m BranchesPopup) AcceptsText() bool { return m.active && m.input.Focused() }
+
 // Start opens the popup at the given working directory. The repository
 // root is detected from this path.
 func (m *BranchesPopup) Start(path string) tea.Cmd {

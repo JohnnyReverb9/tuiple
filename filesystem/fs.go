@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,50 @@ type FileEntry struct {
 	Extension  string
 }
 
+// ── Display and sort options ───────────────────────────────────────────
+//
+// These are set once from the settings (see app.applySettings) rather
+// than threaded through every call: sorting and formatting happen deep
+// inside rendering paths that have no business knowing about config, and
+// the alternative — passing options through a dozen signatures — buys
+// nothing. Guarded by a mutex because previews format sizes and dates
+// from background goroutines.
+
+var (
+	optMu        sync.RWMutex
+	optDirsFirst = true
+	optReverse   = false
+	optTimeStyle = "short"
+	optBinary    = true
+)
+
+// SetSortOptions controls how SortEntries orders a directory.
+func SetSortOptions(dirsFirst, reverse bool) {
+	optMu.Lock()
+	optDirsFirst, optReverse = dirsFirst, reverse
+	optMu.Unlock()
+}
+
+// SetFormatOptions controls how sizes and times are rendered.
+// timeStyle is "short", "iso" or "relative"; binaryUnits picks KiB over kB.
+func SetFormatOptions(timeStyle string, binaryUnits bool) {
+	optMu.Lock()
+	optTimeStyle, optBinary = timeStyle, binaryUnits
+	optMu.Unlock()
+}
+
+func sortOptions() (dirsFirst, reverse bool) {
+	optMu.RLock()
+	defer optMu.RUnlock()
+	return optDirsFirst, optReverse
+}
+
+func formatOptions() (timeStyle string, binaryUnits bool) {
+	optMu.RLock()
+	defer optMu.RUnlock()
+	return optTimeStyle, optBinary
+}
+
 // ── Sorting ────────────────────────────────────────────────────────────
 
 // SortMode determines how files are sorted.
@@ -40,12 +85,20 @@ const (
 	SortByType
 )
 
-// SortEntries sorts entries with directories always first.
+// SortEntries orders a directory listing. Directories come first and the
+// order can be reversed, both per the current settings.
 func SortEntries(entries []FileEntry, mode SortMode) {
+	dirsFirst, reverse := sortOptions()
+
 	sort.SliceStable(entries, func(i, j int) bool {
-		// Directories always first
-		if entries[i].IsDir != entries[j].IsDir {
+		// Directories first, when asked. This grouping is deliberately
+		// immune to the reverse flag below: "reversed" should mean
+		// Z→A within the groups, not files above folders.
+		if dirsFirst && entries[i].IsDir != entries[j].IsDir {
 			return entries[i].IsDir
+		}
+		if reverse {
+			i, j = j, i
 		}
 		switch mode {
 		case SortBySize:
@@ -132,33 +185,70 @@ func ReadDir(path string, showHidden bool) ([]FileEntry, error) {
 
 // FormatSize formats a byte count into a human-readable string.
 func FormatSize(size int64) string {
-	const (
-		KB = 1024
-		MB = KB * 1024
-		GB = MB * 1024
-		TB = GB * 1024
-	)
-	switch {
-	case size >= TB:
-		return fmt.Sprintf("%.1f TB", float64(size)/float64(TB))
-	case size >= GB:
-		return fmt.Sprintf("%.1f GB", float64(size)/float64(GB))
-	case size >= MB:
-		return fmt.Sprintf("%.1f MB", float64(size)/float64(MB))
-	case size >= KB:
-		return fmt.Sprintf("%.1f KB", float64(size)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", size)
+	_, binaryUnits := formatOptions()
+
+	unit := int64(1000)
+	names := []string{"kB", "MB", "GB", "TB"}
+	if binaryUnits {
+		unit = 1024
+		names = []string{"KiB", "MiB", "GiB", "TiB"}
 	}
+
+	step := unit
+	for i, name := range names {
+		next := step * unit
+		if size < next || i == len(names)-1 {
+			if size < step {
+				break
+			}
+			value := float64(size) / float64(step)
+			// Three significant digits, never more: the file list gives
+			// this column eight cells, and "918.2 KiB" needs nine —
+			// which lipgloss would wrap into the Modified column rather
+			// than truncate. "918 KiB" is also simply easier to read.
+			if value >= 100 {
+				return fmt.Sprintf("%.0f %s", value, name)
+			}
+			return fmt.Sprintf("%.1f %s", value, name)
+		}
+		step = next
+	}
+	return fmt.Sprintf("%d B", size)
 }
 
 // FormatTime formats a modification timestamp.
 func FormatTime(t time.Time) string {
+	style, _ := formatOptions()
+	switch style {
+	case "iso":
+		return t.Format("2006-01-02 15:04")
+	case "relative":
+		return relativeTime(t)
+	}
 	now := time.Now()
 	if t.Year() == now.Year() {
 		return t.Format("Jan 02 15:04")
 	}
 	return t.Format("Jan 02  2006")
+}
+
+// relativeTime renders an age rather than a date: closer to how one
+// actually thinks about a working directory ("edited 5m ago").
+func relativeTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < 0:
+		return t.Format("Jan 02 15:04")
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours())/24)
+	}
+	return fmt.Sprintf("%dy ago", int(d.Hours())/24/365)
 }
 
 // DirItemCount returns the number of direct children in a directory.

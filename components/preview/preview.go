@@ -16,14 +16,24 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"tuiple/components/preview/mediarender"
+	"tuiple/config"
 	"tuiple/filesystem"
 	"tuiple/theme"
 )
 
+// Size limits live in the settings (Preview tab); these are the values
+// the app ships with, kept here so the defaults are visible next to the
+// code that enforces them.
 const (
-	maxFileSize      = 1 << 20 // 1 MB
+	maxFileSize      = 1 << 20  // 1 MB
 	maxMediaFileSize = 50 << 20 // 50 MB for media files
 )
+
+// previewLimits reads the configured ceilings, in bytes.
+func previewLimits() (text, media int64) {
+	c := config.Get()
+	return int64(c.Preview.MaxTextKB) << 10, int64(c.Preview.MaxMediaMB) << 20
+}
 
 // ContentLoadedMsg carries preview content back to the model.
 type ContentLoadedMsg struct {
@@ -121,6 +131,10 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 
 	previewW := m.width
 	previewH := m.height
+	previewCfg := config.Get().Preview
+	mediaEnabled := previewCfg.Media
+	hexDump := previewCfg.HexDump
+	maxText, maxMedia := previewLimits()
 	return func() tea.Msg {
 		info := FileInfo{
 			Name:    entry.Name,
@@ -131,6 +145,15 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 
 		// ── Media preview (images, video, PDF, audio) ───────────────
 		mediaKind := mediarender.Classify(entry.Extension)
+		if mediaKind != mediarender.KindNone && !mediaEnabled && mediaKind != mediarender.KindAudio {
+			// Media previews switched off: report the file rather than
+			// rendering it. Audio is exempt — its panel is a player and
+			// metadata view, not a picture.
+			return ContentLoadedMsg{
+				Path: entry.Path, Content: "(media previews are off — see settings, `,`)",
+				Info: info,
+			}
+		}
 		if mediaKind != mediarender.KindNone {
 			// Audio files: parse metadata, show player UI
 			if mediaKind == mediarender.KindAudio {
@@ -141,8 +164,8 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 				}
 			}
 
-			// Allow larger files for media (up to 50 MB)
-			if entry.Size > maxMediaFileSize {
+			// Allow larger files for media (50 MB by default)
+			if entry.Size > maxMedia {
 				return ContentLoadedMsg{
 					Path: entry.Path, Content: "(media file too large to preview)",
 					Info: info,
@@ -176,7 +199,7 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 		}
 
 		// ── Large file guard ───────────────────────────────────────
-		if entry.Size > maxFileSize {
+		if entry.Size > maxText {
 			return ContentLoadedMsg{
 				Path: entry.Path, Content: "(file too large to preview)",
 				Info: info,
@@ -192,10 +215,14 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 			}
 		}
 
-		// Binary → hex dump
+		// Binary → hex dump, or just a note when that is switched off.
 		if !utf8.Valid(data) {
+			content := "(binary file)"
+			if hexDump {
+				content = formatHexDump(data)
+			}
 			return ContentLoadedMsg{
-				Path: entry.Path, Content: formatHexDump(data),
+				Path: entry.Path, Content: content,
 				Info: info,
 			}
 		}
@@ -299,7 +326,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// guarantees DirSizeComputedMsg can never arrive before the
 		// ContentLoadedMsg that creates the dir preview, so the size
 		// update never gets overwritten by stale metadata.
-		if msg.IsDir {
+		if msg.IsDir && config.Get().Preview.DirSizes {
 			return m, computeDirSize(msg.Path)
 		}
 		return m, nil
@@ -548,6 +575,10 @@ func (m Model) audioTickCmd() tea.Cmd {
 // ── View ───────────────────────────────────────────────────────────────
 
 func (m Model) View() string {
+	// One config read per frame; the setting cannot change halfway
+	// through drawing the panel.
+	showLineNumbers := config.Get().Preview.LineNumbers
+
 	if m.width <= 0 || m.path == "" {
 		return theme.Dim.Render(" No file selected")
 	}
@@ -601,11 +632,16 @@ func (m Model) View() string {
 		if start < len(lines) {
 			visible := make([]string, end-start)
 			for i := start; i < end; i++ {
-				if m.isMedia {
+				switch {
+				case m.isMedia:
 					// Media content is already ANSI-colored half-blocks;
 					// render without line numbers to preserve alignment.
 					visible[i-start] = lines[i]
-				} else {
+				case !showLineNumbers:
+					visible[i-start] = theme.PreviewContent.
+						MaxWidth(max(1, m.width-2)).
+						Render(lines[i])
+				default:
 					lineNum := theme.PreviewLineNum.
 						Width(4).Align(lipgloss.Right).
 						Render(fmt.Sprintf("%d", i+1))

@@ -59,6 +59,11 @@ func New() Model {
 func (m *Model) SetSize(w, h int) { m.width = w; m.height = h }
 func (m Model) IsActive() bool    { return m.active }
 
+// AcceptsText reports whether the query field is currently taking
+// keystrokes, so the app can skip keyboard-layout translation while the
+// user types a search term.
+func (m Model) AcceptsText() bool { return m.active && m.input.Focused() }
+
 // Start opens the search overlay in the specified mode for the given root path.
 func (m *Model) Start(mode SearchMode, rootPath string) tea.Cmd {
 	m.active = true

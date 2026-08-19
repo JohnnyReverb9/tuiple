@@ -1,12 +1,14 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"tuiple/config"
 	"tuiple/filesystem"
 )
 
@@ -76,6 +78,29 @@ func NextDeleteRemaining() time.Duration {
 	return rem
 }
 
+// DeleteEntry removes a path using the delete mode from the settings and
+// returns where it went, which is what undo needs to put it back:
+//
+//   - timer:     a hidden sibling, purged after the configured countdown
+//   - trash:     the macOS Trash
+//   - permanent: nowhere — the empty destination is how the history
+//     popup knows the action can no longer be reverted
+func DeleteEntry(src string, isDir bool) (string, error) {
+	switch config.Get().Delete.Mode {
+	case config.DeleteTrash:
+		return filesystem.MoveToTrash(src)
+	case config.DeletePermanent:
+		if err := filesystem.Remove(src, isDir); err != nil {
+			return "", err
+		}
+		return "", nil
+	default:
+		return SoftDeletePath(src)
+	}
+}
+
+// SoftDeletePath implements the timer mode: the file is moved out of
+// sight next to itself and purged once the countdown expires.
 func SoftDeletePath(src string) (string, error) {
 	dir := filepath.Dir(src)
 	base := filepath.Base(src)
@@ -87,8 +112,13 @@ func SoftDeletePath(src string) (string, error) {
 		return "", err
 	}
 
+	// Read the countdown once, here: a setting changed while a delete is
+	// pending must not retroactively move the deadline the status bar is
+	// already counting down.
+	countdown := time.Duration(config.Get().Delete.TimerSeconds) * time.Second
+
 	pendingDeletesMu.Lock()
-	timer := time.AfterFunc(20*time.Second, func() {
+	timer := time.AfterFunc(countdown, func() {
 		os.RemoveAll(trashPath)
 		pendingDeletesMu.Lock()
 		delete(pendingDeletes, trashPath)
@@ -96,7 +126,7 @@ func SoftDeletePath(src string) (string, error) {
 	})
 	pendingDeletes[trashPath] = pendingDelete{
 		timer:     timer,
-		expiresAt: time.Now().Add(20 * time.Second),
+		expiresAt: time.Now().Add(countdown),
 	}
 	pendingDeletesMu.Unlock()
 
@@ -164,6 +194,15 @@ func Undo() (string, error) {
 
 	err := revertEvent(&ev)
 	if err != nil {
+		// A restore macOS merely refused is worth keeping: the file is
+		// still in the Trash, and the same u will work after Put Back or
+		// after the terminal is granted Full Disk Access. Anything else
+		// — a purged countdown, a file deleted for good — can never
+		// succeed, so the entry is dropped rather than blocking every
+		// older action behind it.
+		if errors.Is(err, filesystem.ErrRestoreBlocked) {
+			undoStack = append(undoStack, ev)
+		}
 		return "", fmt.Errorf("undo failed: %w", err)
 	}
 
@@ -202,11 +241,13 @@ func Redo() (string, error) {
 func revertEvent(ev *HistoryEvent) error {
 	switch ev.Op {
 	case OpRename, OpMove:
-		// To revert move/rename, move Dst back to Src
+		// To revert move/rename, move Dst back to Src.
+		steps := make([]renameStep, 0, len(ev.Items))
 		for _, item := range ev.Items {
-			if err := filesystem.Move(item.Dst, item.Src); err != nil {
-				return err
-			}
+			steps = append(steps, renameStep{src: item.Dst, dst: item.Src})
+		}
+		if err := moveAll(steps); err != nil {
+			return err
 		}
 	case OpCreateFile, OpCreateDir, OpCopy:
 		// To revert create/copy, remove Dst
@@ -216,8 +257,20 @@ func revertEvent(ev *HistoryEvent) error {
 			}
 		}
 	case OpDelete:
-		// To revert delete, move Dst (trash path) back to Src
+		// To revert a delete, put the file back where it came from. The
+		// route depends on where the delete put it: an item in the macOS
+		// Trash needs Finder's cooperation, a timer-mode sibling is a
+		// plain rename, and a permanent delete has nothing to restore.
 		for _, item := range ev.Items {
+			if item.Dst == "" {
+				return fmt.Errorf("%s was deleted permanently", filepath.Base(item.Src))
+			}
+			if filesystem.InTrash(item.Dst) {
+				if err := filesystem.RestoreFromTrash(item.Dst, item.Src); err != nil {
+					return fmt.Errorf("could not restore %s: %w", filepath.Base(item.Src), err)
+				}
+				continue
+			}
 			if err := filesystem.Move(item.Dst, item.Src); err != nil {
 				if os.IsNotExist(err) {
 					return fmt.Errorf("file already permanently deleted")
@@ -233,10 +286,12 @@ func revertEvent(ev *HistoryEvent) error {
 func applyEvent(ev *HistoryEvent) error {
 	switch ev.Op {
 	case OpRename, OpMove:
+		steps := make([]renameStep, 0, len(ev.Items))
 		for _, item := range ev.Items {
-			if err := filesystem.Move(item.Src, item.Dst); err != nil {
-				return err
-			}
+			steps = append(steps, renameStep{src: item.Src, dst: item.Dst})
+		}
+		if err := moveAll(steps); err != nil {
+			return err
 		}
 	case OpCreateFile:
 		for _, item := range ev.Items {
@@ -264,11 +319,11 @@ func applyEvent(ev *HistoryEvent) error {
 		}
 	case OpDelete:
 		for i, item := range ev.Items {
-			newTrashPath, err := SoftDeletePath(item.Src)
+			dst, err := DeleteEntry(item.Src, item.IsDir)
 			if err != nil {
 				return err
 			}
-			ev.Items[i].Dst = newTrashPath
+			ev.Items[i].Dst = dst
 		}
 	}
 	return nil

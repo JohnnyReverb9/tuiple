@@ -62,6 +62,17 @@ func (m *Model) SetSize(w, h int) { m.width = w; m.height = h }
 // IsActive reports whether the overlay is currently visible.
 func (m Model) IsActive() bool { return m.active }
 
+// AcceptsText reports whether one of the overlay's text fields has the
+// keyboard: the commit message, a stash message, or the log filter /
+// new-branch prompt. Used by the app to leave those keystrokes alone
+// when translating Cyrillic layouts.
+func (m Model) AcceptsText() bool {
+	if !m.active {
+		return false
+	}
+	return m.commit.message.Focused() || m.commit.input.Focused() || m.log.input.Focused()
+}
+
 // Start opens the overlay rooted at the given working path. The repo
 // root, current branch, and upstream tracking are probed synchronously
 // (each is a single `git` invocation and completes in a few ms).

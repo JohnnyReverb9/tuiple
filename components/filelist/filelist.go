@@ -9,8 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tuiple/config"
 	"tuiple/filesystem"
 	"tuiple/icons"
+	"tuiple/keys"
 	"tuiple/theme"
 )
 
@@ -50,11 +52,53 @@ type GitFileHistoryMsg struct{ Path string }
 // GitBlameMsg asks the app to open the blame popup (abs path).
 type GitBlameMsg struct{ Path string }
 
+// BulkRenameRequestMsg asks the app to open the marked names (or the
+// whole directory when nothing is marked) in the editor.
+type BulkRenameRequestMsg struct {
+	Dir   string
+	Names []string
+}
+
+// DirSizeRequestMsg asks the app to measure directories on demand —
+// walking every tree in the list on every redraw would be far too slow
+// to do automatically.
+type DirSizeRequestMsg struct{ Paths []string }
+
+// SetDirSizeMsg carries a finished measurement back into the list.
+type SetDirSizeMsg struct {
+	Path string
+	Size int64
+}
+
+// ArchiveRequestMsg asks the app to zip the marked entries.
+type ArchiveRequestMsg struct {
+	Dir   string
+	Names []string
+}
+
+// ExtractRequestMsg asks the app to unpack the archive under the cursor.
+type ExtractRequestMsg struct{ Path string }
+
 // ClearSelectionMsg tells the list to drop its active selections.
 type ClearSelectionMsg struct{}
 
 // RefreshListMsg asks the list to reload entries.
 type RefreshListMsg struct{}
+
+// EntriesLoadedMsg carries the result of a directory read back to the
+// list. Reads happen off the UI goroutine, so a slow directory — a
+// network share, or one with tens of thousands of files — no longer
+// freezes the interface while it is being listed.
+type EntriesLoadedMsg struct {
+	Path    string
+	Token   int
+	Entries []filesystem.FileEntry
+	Err     error
+}
+
+// SetShowHiddenMsg asks the list to show or hide dotfiles. Sent when the
+// setting changes so the switch takes effect without a restart.
+type SetShowHiddenMsg struct{ Show bool }
 
 // SortListMsg asks the list to reload with a specific sort mode.
 type SortListMsg struct {
@@ -72,6 +116,10 @@ type historyEntry struct {
 
 // Model is the file-list Bubble Tea model.
 type Model struct {
+	// allEntries is the directory as read from disk; entries is that
+	// list after the live filter. Keeping both means typing in the
+	// filter never touches the disk.
+	allEntries  []filesystem.FileEntry
 	entries     []filesystem.FileEntry
 	cursor      int
 	offset      int // scroll offset
@@ -91,6 +139,22 @@ type Model struct {
 
 	gitFileStat map[string]string   // abs path -> 2-char porcelain code
 	gitDirHas   map[string]struct{} // dirs that contain changes (abs path)
+
+	// A read in flight is identified by loadToken; results arriving with
+	// a stale token belong to a directory the user has already left.
+	loadToken int
+	loading   bool
+
+	// Where to put the cursor once the pending read lands: on a named
+	// entry if it is there, otherwise back at this position.
+	pendingSelect string
+	pendingCursor int
+	pendingOffset int
+
+	// dirSizes holds directory sizes the user asked for with s. Sizes
+	// are keyed by absolute path and survive navigation, so stepping
+	// back into a directory still shows what was measured earlier.
+	dirSizes map[string]int64
 }
 
 // SetGitState injects git status data so the list can render per-row
@@ -102,13 +166,16 @@ func (m *Model) SetGitState(fileStat map[string]string, dirHas map[string]struct
 
 // New creates a file-list rooted at the given path.
 func New(path string) Model {
+	cfg := config.Get()
 	m := Model{
 		currentPath: path,
-		sortMode:    filesystem.SortByName,
+		sortMode:    cfg.SortMode(),
+		showHidden:  cfg.Files.ShowHidden,
 		focused:     true,
 		selected:    make(map[string]struct{}),
+		dirSizes:    make(map[string]int64),
 	}
-	m.loadEntries()
+	m.loadNow()
 	return m
 }
 
@@ -120,7 +187,14 @@ func (m Model) Entries() []filesystem.FileEntry    { return m.entries }
 func (m Model) IsFiltering() bool                  { return m.filtering }
 
 // SelectByName positions the cursor on the entry with the given name.
+// When a directory read is still in flight the name is remembered and
+// applied the moment the entries land — that is the normal case right
+// after a search result jumps to another directory.
 func (m Model) SelectByName(name string) Model {
+	if m.loading {
+		m.pendingSelect = name
+		return m
+	}
 	for i, e := range m.entries {
 		if e.Name == name {
 			m.cursor = i
@@ -137,6 +211,26 @@ func (m Model) SelectedEntry() *filesystem.FileEntry {
 		return &e
 	}
 	return nil
+}
+
+// bulkRenameNames lists what a bulk rename should cover: the marked
+// entries in list order, or every entry in the directory when nothing is
+// marked. Order matters — it is the only link between a line in the
+// editor and the file it renames.
+func (m Model) bulkRenameNames() []string {
+	names := make([]string, 0, len(m.entries))
+	if len(m.selected) > 0 {
+		for _, e := range m.entries {
+			if _, marked := m.selected[e.Path]; marked {
+				names = append(names, e.Name)
+			}
+		}
+		return names
+	}
+	for _, e := range m.entries {
+		names = append(names, e.Name)
+	}
+	return names
 }
 
 func (m Model) SelectedEntries() []filesystem.FileEntry {
@@ -172,35 +266,97 @@ func (m Model) NavigateTo(path string) (Model, tea.Cmd) {
 	m.offset = 0
 	m.filter = ""
 	m.filtering = false
-	m.loadEntries()
+	m.entries = nil
+	m.allEntries = nil
+	loadCmd := m.startLoad("", 0, 0)
 
-	return m, func() tea.Msg { return DirChangedMsg{Path: path} }
+	return m, tea.Batch(loadCmd, func() tea.Msg { return DirChangedMsg{Path: path} })
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────
 
-func (m *Model) loadEntries() {
+// loadNow reads the directory on the spot. Only startup uses it: there
+// is nothing on screen yet to keep responsive, and the first directory
+// has to be there before the first frame is drawn.
+func (m *Model) loadNow() {
 	entries, err := filesystem.ReadDir(m.currentPath, m.showHidden)
 	if err != nil {
 		m.err = err
+		m.allEntries = nil
 		m.entries = nil
 		return
 	}
 	m.err = nil
+	filesystem.SortEntries(entries, m.sortMode)
+	m.allEntries = entries
+	m.applyFilter()
+}
 
-	if m.filter != "" {
-		lower := strings.ToLower(m.filter)
-		var filtered []filesystem.FileEntry
-		for _, e := range entries {
-			if strings.Contains(strings.ToLower(e.Name), lower) {
-				filtered = append(filtered, e)
+// startLoad kicks off a read of the current directory. selectName is the
+// entry to land the cursor on when the read finishes; cursor and offset
+// are where to land if that name is gone.
+//
+// The previous contents stay on screen until the new ones arrive, which
+// is what makes a slow directory feel like a pause rather than a blank
+// panel.
+func (m *Model) startLoad(selectName string, cursor, offset int) tea.Cmd {
+	m.loadToken++
+	m.loading = true
+	m.pendingSelect = selectName
+	m.pendingCursor = cursor
+	m.pendingOffset = offset
+
+	token := m.loadToken
+	path := m.currentPath
+	showHidden := m.showHidden
+	sortMode := m.sortMode
+
+	return func() tea.Msg {
+		entries, err := filesystem.ReadDir(path, showHidden)
+		if err == nil {
+			filesystem.SortEntries(entries, sortMode)
+		}
+		return EntriesLoadedMsg{Path: path, Token: token, Entries: entries, Err: err}
+	}
+}
+
+// applyFilter derives the visible list from the directory contents.
+func (m *Model) applyFilter() {
+	if m.filter == "" {
+		m.entries = m.allEntries
+		return
+	}
+	lower := strings.ToLower(m.filter)
+	filtered := make([]filesystem.FileEntry, 0, len(m.allEntries))
+	for _, e := range m.allEntries {
+		if strings.Contains(strings.ToLower(e.Name), lower) {
+			filtered = append(filtered, e)
+		}
+	}
+	m.entries = filtered
+}
+
+// placeCursor restores the cursor after the list contents changed.
+func (m *Model) placeCursor(selectName string, cursor, offset int) {
+	if selectName != "" {
+		for i, e := range m.entries {
+			if e.Name == selectName {
+				m.cursor = i
+				m.offset = offset
+				m.fixScroll()
+				return
 			}
 		}
-		entries = filtered
 	}
-
-	filesystem.SortEntries(entries, m.sortMode)
-	m.entries = entries
+	m.cursor = cursor
+	m.offset = offset
+	if m.cursor >= len(m.entries) {
+		m.cursor = max(0, len(m.entries)-1)
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	m.fixScroll()
 }
 
 func (m *Model) fixScroll() {
@@ -225,13 +381,26 @@ func (m Model) hasGitState() bool {
 	return m.gitFileStat != nil
 }
 
-func (m Model) nameWidth() int {
-	if m.hasGitState() {
-		// Layout: " " icon(1) " " name " " git(1) " " size(8) " " date(12) → fixed=27
-		return max(10, m.width-27)
+// Column widths. The size column is fixed; the Modified column depends
+// on the configured format, because an ISO timestamp needs four more
+// cells than "Jan 02 15:04" and a column that is too narrow does not
+// truncate — lipgloss wraps it into the row below.
+const sizeColW = 8
+
+func dateColW() int {
+	if config.Get().Files.TimeFormat == "iso" {
+		return 16 // 2006-01-02 15:04
 	}
-	// Layout: " " icon(1) " " name " " size(8) " " date(12) → fixed=25
-	return max(10, m.width-25)
+	return 12
+}
+
+func (m Model) nameWidth() int {
+	// " " icon(1) " " name " " [git(1) " "] size " " date
+	fixed := 3 + sizeColW + 1 + dateColW() + 1
+	if m.hasGitState() {
+		fixed += 2
+	}
+	return max(10, m.width-fixed)
 }
 
 // renderGitMarker returns a 1-cell coloured marker character for the given
@@ -296,35 +465,70 @@ func gitMarkerChar(code string) (rune, lipgloss.TerminalColor) {
 // ── Update ─────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	if !m.focused {
-		return m, nil
+	// Keyboard and mouse input only belongs to the list while it holds
+	// focus; state messages (reload, sort, settings) apply regardless of
+	// which panel the user is looking at.
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg:
+		if !m.focused {
+			return m, nil
+		}
 	}
 
 	switch msg := msg.(type) {
+	case EntriesLoadedMsg:
+		// Ignore results for a directory we have already left, or from a
+		// read that a newer one has superseded.
+		if msg.Token != m.loadToken || msg.Path != m.currentPath {
+			return m, nil
+		}
+		m.loading = false
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.allEntries = nil
+			m.entries = nil
+			return m, nil
+		}
+		m.err = nil
+		m.allEntries = msg.Entries
+		m.applyFilter()
+		m.placeCursor(m.pendingSelect, m.pendingCursor, m.pendingOffset)
+		m.pendingSelect = ""
+		return m, nil
 	case RefreshListMsg:
 		var selectedName string
 		if e := m.SelectedEntry(); e != nil {
 			selectedName = e.Name
 		}
-		m.loadEntries()
-		if selectedName != "" {
-			for i, e := range m.entries {
-				if e.Name == selectedName {
-					m.cursor = i
-					break
-				}
-			}
+		return m, m.startLoad(selectedName, m.cursor, m.offset)
+	case SetShowHiddenMsg:
+		if m.showHidden == msg.Show {
+			return m, nil
 		}
-		if m.cursor >= len(m.entries) {
-			m.cursor = max(0, len(m.entries)-1)
+		m.showHidden = msg.Show
+		var selectedName string
+		if e := m.SelectedEntry(); e != nil {
+			selectedName = e.Name
 		}
-		m.fixScroll()
-		return m, nil
+		return m, m.startLoad(selectedName, m.cursor, m.offset)
 	case SortListMsg:
+		// Re-selecting the current order is a no-op rather than a jump
+		// back to the top: settings changes broadcast this message on
+		// every edit, and none of them should move the cursor.
+		if m.sortMode == msg.Mode {
+			return m, nil
+		}
 		m.sortMode = msg.Mode
-		m.cursor = 0
-		m.offset = 0
-		m.loadEntries()
+		var selectedName string
+		if e := m.SelectedEntry(); e != nil {
+			selectedName = e.Name
+		}
+		return m, m.startLoad(selectedName, 0, 0)
+	case SetDirSizeMsg:
+		if m.dirSizes == nil {
+			m.dirSizes = make(map[string]int64)
+		}
+		m.dirSizes[msg.Path] = msg.Size
 		return m, nil
 	case ClearSelectionMsg:
 		m.selected = make(map[string]struct{})
@@ -355,7 +559,7 @@ func (m Model) updateFilter(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.filter = ""
 		m.cursor = 0
 		m.offset = 0
-		m.loadEntries()
+		m.applyFilter()
 	case "enter":
 		m.filtering = false
 	case "backspace":
@@ -363,7 +567,7 @@ func (m Model) updateFilter(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.filter = m.filter[:len(m.filter)-1]
 			m.cursor = 0
 			m.offset = 0
-			m.loadEntries()
+			m.applyFilter()
 		}
 	default:
 		r := msg.String()
@@ -371,74 +575,79 @@ func (m Model) updateFilter(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.filter += r
 			m.cursor = 0
 			m.offset = 0
-			m.loadEntries()
+			m.applyFilter()
 		}
 	}
 	return m, nil
 }
 
 func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
+	action, bound := keys.Match(keys.ScopeList, msg.String())
+	if !bound {
+		return m, nil
+	}
+
+	switch action {
+	case keys.CursorUp:
 		if m.cursor > 0 {
 			m.cursor--
 			m.fixScroll()
 		}
-	case "down", "j":
+	case keys.CursorDown:
 		if m.cursor < len(m.entries)-1 {
 			m.cursor++
 			m.fixScroll()
 		}
-	case "enter", "right", "l":
+	case keys.Open:
 		// For audio files, enterSelected emits OpenFileRequestMsg; the
 		// app layer then toggles playback when the same audio is already
 		// loaded in the preview pane.
 		return m.enterSelected()
-	case "backspace", "left", "h":
+	case keys.Parent:
 		return m.goUp()
-	case "~":
+	case keys.HomeDir:
 		return m.NavigateTo(filesystem.HomeDir())
-	case ".":
+	case keys.ToggleHidden:
 		m.showHidden = !m.showHidden
-		m.loadEntries()
-		if m.cursor >= len(m.entries) {
-			m.cursor = max(0, len(m.entries)-1)
+		var selectedName string
+		if e := m.SelectedEntry(); e != nil {
+			selectedName = e.Name
 		}
-		m.fixScroll()
-	case "/":
+		return m, m.startLoad(selectedName, m.cursor, m.offset)
+	case keys.Filter:
 		m.filtering = true
 		m.filter = ""
-	case "g":
+	case keys.Top:
 		m.cursor = 0
 		m.offset = 0
-	case "G":
+	case keys.Bottom:
 		if len(m.entries) > 0 {
 			m.cursor = len(m.entries) - 1
 			m.fixScroll()
 		}
-	case "ctrl+d":
+	case keys.HalfPageDown:
 		half := m.visibleHeight() / 2
 		m.cursor = min(m.cursor+half, max(0, len(m.entries)-1))
 		m.fixScroll()
-	case "ctrl+u":
+	case keys.HalfPageUp:
 		half := m.visibleHeight() / 2
 		m.cursor = max(m.cursor-half, 0)
 		m.fixScroll()
-	case "d":
+	case keys.Delete:
 		if entries := m.SelectedEntries(); len(entries) > 0 {
 			return m, func() tea.Msg { return DeleteRequestMsg{Entries: entries} }
 		}
-	case "c":
+	case keys.Copy:
 		if entries := m.SelectedEntries(); len(entries) > 0 {
 			return m, func() tea.Msg { return CopyMsg{Entries: entries} }
 		}
-	case "x":
+	case keys.Cut:
 		if entries := m.SelectedEntries(); len(entries) > 0 {
 			return m, func() tea.Msg { return CutMsg{Entries: entries} }
 		}
-	case "p":
+	case keys.Paste:
 		return m, func() tea.Msg { return PasteRequestMsg{} }
-	case " ":
+	case keys.Mark:
 		if entry := m.SelectedEntry(); entry != nil {
 			if _, ok := m.selected[entry.Path]; ok {
 				delete(m.selected, entry.Path)
@@ -450,48 +659,83 @@ func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.fixScroll()
 			}
 		}
-	case "esc":
+	case keys.ClearMarks:
 		m.selected = make(map[string]struct{})
 		m.filtering = false
 		m.filter = ""
-	case "r":
+	case keys.Rename:
 		if entry := m.SelectedEntry(); entry != nil {
 			return m, func() tea.Msg { return RenameRequestMsg{Entry: *entry} }
 		}
-	case "n":
+	case keys.NewFile:
 		return m, func() tea.Msg { return CreateFileRequestMsg{} }
-	case "N": // Shift+N
+	case keys.NewDir:
 		return m, func() tea.Msg { return CreateDirRequestMsg{} }
+	case keys.BulkRename:
+		// Marked entries if there are any, otherwise the whole
+		// directory — the same rule the other bulk operations use.
+		names := m.bulkRenameNames()
+		if len(names) == 0 {
+			return m, nil
+		}
+		dir := m.currentPath
+		return m, func() tea.Msg { return BulkRenameRequestMsg{Dir: dir, Names: names} }
+	case keys.DirSize:
+		var paths []string
+		for _, e := range m.SelectedEntries() {
+			if e.IsDir {
+				paths = append(paths, e.Path)
+			}
+		}
+		if len(paths) == 0 {
+			return m, nil
+		}
+		return m, func() tea.Msg { return DirSizeRequestMsg{Paths: paths} }
+	case keys.Zip:
+		entries := m.SelectedEntries()
+		if len(entries) == 0 {
+			return m, nil
+		}
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name)
+		}
+		dir := m.currentPath
+		return m, func() tea.Msg { return ArchiveRequestMsg{Dir: dir, Names: names} }
+	case keys.Extract:
+		entry := m.SelectedEntry()
+		if entry == nil || entry.IsDir {
+			return m, nil
+		}
+		p := entry.Path
+		return m, func() tea.Msg { return ExtractRequestMsg{Path: p} }
 	}
 
 	// ── Git-aware file operations (only inside a repo) ─────────────
 	if m.hasGitState() {
 		entry := m.SelectedEntry()
 		if entry != nil && !entry.IsDir {
-			switch msg.String() {
-			case "a":
+			switch action {
+			case keys.GitStage:
 				p := entry.Path
 				return m, func() tea.Msg { return GitStageMsg{Path: p} }
-			case "R":
+			case keys.GitUnstage:
 				p := entry.Path
 				return m, func() tea.Msg { return GitUnstageMsg{Path: p} }
-			case "D": // Shift+D — discard working-tree changes
+			case keys.GitDiscard:
 				p := entry.Path
 				return m, func() tea.Msg { return GitDiscardMsg{Path: p} }
-			case "H":
+			case keys.GitFileHistory:
 				p := entry.Path
 				return m, func() tea.Msg { return GitFileHistoryMsg{Path: p} }
-			case "L":
+			case keys.GitBlame:
 				p := entry.Path
 				return m, func() tea.Msg { return GitBlameMsg{Path: p} }
 			}
 		}
-		if entry != nil {
-			switch msg.String() {
-			case "i":
-				p := entry.Path
-				return m, func() tea.Msg { return GitIgnoreMsg{Path: p} }
-			}
+		if entry != nil && action == keys.GitIgnore {
+			p := entry.Path
+			return m, func() tea.Msg { return GitIgnoreMsg{Path: p} }
 		}
 	}
 
@@ -516,19 +760,14 @@ func (m Model) goUp() (Model, tea.Cmd) {
 		prev := m.history[len(m.history)-1]
 		m.history = m.history[:len(m.history)-1]
 		m.currentPath = prev.path
-		m.cursor = prev.cursor
-		m.offset = prev.offset
 		m.filter = ""
 		m.filtering = false
-		m.loadEntries()
-		for i, e := range m.entries {
-			if e.Name == childName {
-				m.cursor = i
-				m.fixScroll()
-				break
-			}
-		}
-		return m, func() tea.Msg { return DirChangedMsg{Path: m.currentPath} }
+		m.entries = nil
+		m.allEntries = nil
+		// Land on the directory we came out of; fall back to where the
+		// cursor was when we left this listing.
+		loadCmd := m.startLoad(childName, prev.cursor, prev.offset)
+		return m, tea.Batch(loadCmd, func() tea.Msg { return DirChangedMsg{Path: m.currentPath} })
 	}
 
 	parent := filepath.Dir(m.currentPath)
@@ -537,13 +776,8 @@ func (m Model) goUp() (Model, tea.Cmd) {
 	}
 
 	newM, cmd := m.NavigateTo(parent)
-	for i, e := range newM.entries {
-		if e.Name == childName {
-			newM.cursor = i
-			newM.fixScroll()
-			break
-		}
-	}
+	// NavigateTo starts at the top; prefer the directory we just left.
+	newM.pendingSelect = childName
 	return newM, cmd
 }
 
@@ -556,6 +790,10 @@ func (m Model) View() string {
 
 	var lines []string
 
+	// One config read per frame rather than one per row — the setting
+	// cannot change halfway through drawing a list.
+	showIcons := config.Get().Files.Icons
+
 	// Column header
 	lines = append(lines, m.renderHeader())
 
@@ -564,13 +802,17 @@ func (m Model) View() string {
 			Render(" Error: " + m.err.Error())
 		lines = append(lines, errLine)
 	} else if len(m.entries) == 0 {
-		lines = append(lines, theme.Dim.Render(" (empty directory)"))
+		if m.loading {
+			lines = append(lines, theme.Dim.Render(" reading…"))
+		} else {
+			lines = append(lines, theme.Dim.Render(" (empty directory)"))
+		}
 	} else {
 		vh := m.visibleHeight()
 		end := min(m.offset+vh, len(m.entries))
 
 		for i := m.offset; i < end; i++ {
-			lines = append(lines, m.renderEntry(i))
+			lines = append(lines, m.renderEntry(i, showIcons))
 		}
 	}
 
@@ -624,8 +866,8 @@ func (m Model) View() string {
 func (m Model) renderHeader() string {
 	nameW := m.nameWidth()
 	name := theme.ListHeader.Width(nameW).Render("Name")
-	size := theme.ListHeader.Width(8).Align(lipgloss.Right).Render("Size")
-	date := theme.ListHeader.Width(12).Render("Modified")
+	size := theme.ListHeader.Width(sizeColW).Align(lipgloss.Right).Render("Size")
+	date := theme.ListHeader.Width(dateColW()).Render("Modified")
 	if m.hasGitState() {
 		// Layout mirrors the data row: " " icon " " name " " S(1) " " size " " date
 		gitHdr := theme.ListHeader.Width(1).Render("S")
@@ -635,7 +877,7 @@ func (m Model) renderHeader() string {
 	return fmt.Sprintf("   %s %s %s", name, size, date)
 }
 
-func (m Model) renderEntry(idx int) string {
+func (m Model) renderEntry(idx int, showIcons bool) string {
 	entry := m.entries[idx]
 	isSelected := idx == m.cursor
 	_, isMarked := m.selected[entry.Path]
@@ -656,16 +898,26 @@ func (m Model) renderEntry(idx int) string {
 	// File size
 	var sizeStr string
 	if entry.IsDir {
-		sizeStr = "--"
+		if size, measured := m.dirSizes[entry.Path]; measured {
+			sizeStr = filesystem.FormatSize(size)
+		} else {
+			sizeStr = "--"
+		}
 	} else {
 		sizeStr = filesystem.FormatSize(entry.Size)
 	}
 
 	// Date
 	dateStr := filesystem.FormatTime(entry.ModTime)
+	dateW := dateColW()
 
-	// Icon with fixed 1-cell width
+	// Icon with fixed 1-cell width. Turning icons off keeps the cell —
+	// the header and every other row are aligned to it, so blanking the
+	// symbol is all that is needed.
 	iconCell := lipgloss.NewStyle().Foreground(icon.Color).Width(1).MaxWidth(1).Render(icon.Symbol)
+	if !showIcons {
+		iconCell = " "
+	}
 
 	// Git marker on the right side (between name and size)
 	showGit := m.hasGitState()
@@ -693,8 +945,10 @@ func (m Model) renderEntry(idx int) string {
 		sp := applyBg(lipgloss.NewStyle()).Render(" ")
 		iconStr := applyBg(lipgloss.NewStyle().Foreground(icon.Color)).Width(1).MaxWidth(1).Render(icon.Symbol)
 		nameStr := applyBg(lipgloss.NewStyle()).Width(nameW).Render(truncate(name, nameW))
-		sizeRend := applyBg(lipgloss.NewStyle()).Width(8).Align(lipgloss.Right).MaxWidth(8).Render(sizeStr)
-		dateRend := applyBg(lipgloss.NewStyle()).Width(12).MaxWidth(12).Render(dateStr)
+		sizeRend := applyBg(lipgloss.NewStyle()).Width(sizeColW).Align(lipgloss.Right).
+			MaxWidth(sizeColW).Render(truncate(sizeStr, sizeColW))
+		dateRend := applyBg(lipgloss.NewStyle()).Width(dateW).MaxWidth(dateW).
+			Render(truncate(dateStr, dateW))
 		if showGit {
 			ch, col := m.gitMarkerInfo(entry)
 			markStr := applyBg(lipgloss.NewStyle().Foreground(col)).Bold(true).Width(1).MaxWidth(1).Render(ch)
@@ -711,8 +965,10 @@ func (m Model) renderEntry(idx int) string {
 		sp := applyBg(lipgloss.NewStyle()).Render(" ")
 		iconStr := applyBg(lipgloss.NewStyle().Foreground(icon.Color)).Width(1).MaxWidth(1).Render(icon.Symbol)
 		nameStr := applyBg(lipgloss.NewStyle()).Width(nameW).Render(truncate(name, nameW))
-		sizeRend := applyBg(lipgloss.NewStyle()).Width(8).Align(lipgloss.Right).MaxWidth(8).Render(sizeStr)
-		dateRend := applyBg(lipgloss.NewStyle()).Width(12).MaxWidth(12).Render(dateStr)
+		sizeRend := applyBg(lipgloss.NewStyle()).Width(sizeColW).Align(lipgloss.Right).
+			MaxWidth(sizeColW).Render(truncate(sizeStr, sizeColW))
+		dateRend := applyBg(lipgloss.NewStyle()).Width(dateW).MaxWidth(dateW).
+			Render(truncate(dateStr, dateW))
 		if showGit {
 			ch, col := m.gitMarkerInfo(entry)
 			markStr := applyBg(lipgloss.NewStyle().Foreground(col)).Bold(true).Width(1).MaxWidth(1).Render(ch)
@@ -737,7 +993,8 @@ func (m Model) renderEntry(idx int) string {
 	}
 
 	nameStr := nameStyle.Width(nameW).MaxWidth(nameW).Render(name)
-	sizeRendered := theme.FileSize.Width(8).Align(lipgloss.Right).MaxWidth(8).Render(sizeStr)
+	sizeRendered := theme.FileSize.Width(sizeColW).Align(lipgloss.Right).
+		MaxWidth(sizeColW).Render(truncate(sizeStr, sizeColW))
 
 	// Visual indicator for marked (multi-selected) rows
 	if isMarked {
@@ -745,7 +1002,7 @@ func (m Model) renderEntry(idx int) string {
 		nameStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Width(nameW).MaxWidth(nameW).Render(name)
 	}
 
-	dateRendered := theme.FileDate.Width(12).MaxWidth(12).Render(dateStr)
+	dateRendered := theme.FileDate.Width(dateW).MaxWidth(dateW).Render(truncate(dateStr, dateW))
 
 	return buildLine(iconCell, nameStr, sizeRendered, dateRendered)
 }

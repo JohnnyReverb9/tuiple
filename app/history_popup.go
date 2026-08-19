@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tuiple/filesystem"
 	"tuiple/theme"
 )
 
@@ -88,6 +89,9 @@ func NewHistoryPopup() HistoryPopup {
 
 func (h *HistoryPopup) SetSize(w, height int) { h.width = w; h.height = height }
 func (h HistoryPopup) IsActive() bool         { return h.active }
+
+// AcceptsText reports whether the filter prompt is taking keystrokes.
+func (h HistoryPopup) AcceptsText() bool { return h.active && h.filtering }
 
 // Start refreshes the snapshot from the global stacks and shows the popup.
 func (h *HistoryPopup) Start() {
@@ -708,12 +712,21 @@ func (h HistoryPopup) renderExpanded(ev HistoryEvent, w int) []string {
 		case OpCreateFile, OpCreateDir:
 			body = "create " + dst
 		case OpDelete:
-			rem := softDeleteRemaining(dst)
-			tag := ""
-			if rem > 0 {
-				tag = fmt.Sprintf("  (purges in %ds)", int(rem.Seconds()))
-			} else {
-				tag = "  (purged)"
+			// Where the file went decides what there is to say about it:
+			// a countdown for timer mode, a standing offer for the
+			// Trash, and nothing at all once it was removed outright.
+			var tag string
+			switch {
+			case dst == "":
+				tag = "  (permanent)"
+			case filesystem.InTrash(dst):
+				tag = "  (in Trash)"
+			default:
+				if rem := softDeleteRemaining(dst); rem > 0 {
+					tag = fmt.Sprintf("  (purges in %ds)", int(rem.Seconds()))
+				} else {
+					tag = "  (purged)"
+				}
 			}
 			body = "delete " + src + tag
 		default:
