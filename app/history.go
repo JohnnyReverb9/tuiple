@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"tuiple/config"
-	"tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/config"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
 )
 
 type OpType string

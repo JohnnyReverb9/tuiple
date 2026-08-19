@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/filesystem"
-	"tuiple/theme"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // HistoryPopup is a read-only viewer over the undo/redo stacks. It lists
@@ -742,8 +742,8 @@ func (h HistoryPopup) renderExpanded(ev HistoryEvent, w int) []string {
 
 // homePrefix returns "$HOME/" so callers can cheaply strip the home
 // directory off absolute paths before filter matching. The trailing
-// slash matters: without it "/Users/stepanrulev" would also match
-// "/Users/stepanrulev2/..." which we don't want.
+// slash matters: without it "/Users/ann" would also match
+// "/Users/annette/..." which we don't want.
 func homePrefix() string {
 	h, err := os.UserHomeDir()
 	if err != nil || h == "" {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -130,6 +131,29 @@ func TestSettingsRowsRender(t *testing.T) {
 		}
 		if view := p.View(); strings.TrimSpace(view) == "" {
 			t.Errorf("tab %d rendered empty", tab)
+		}
+	}
+}
+
+// Quoting is what stands between a file name and the shell. Go's %q
+// looks like quoting but is not: inside its double quotes sh still
+// expands $(...), backticks and $VAR, so a file called "$(rm -rf ~).png"
+// would run when opened. This asserts the real thing — sh itself has to
+// hand the name back untouched.
+func TestShellQuoteBlocksExpansion(t *testing.T) {
+	for _, name := range []string{
+		"/tmp/$(id -un).png",
+		"/tmp/`whoami`.png",
+		"/tmp/$HOME.png",
+		"/tmp/a b; rm -rf x.png",
+		"/tmp/it's $weird.png",
+	} {
+		out, err := exec.Command("sh", "-c", "printf %s "+shellQuote(name)).Output()
+		if err != nil {
+			t.Fatalf("sh refused %q: %v", name, err)
+		}
+		if string(out) != name {
+			t.Errorf("sh saw %q, want the name verbatim %q", out, name)
 		}
 	}
 }

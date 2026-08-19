@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/theme"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // OpenBlameMsg asks the app to open the blame popup.

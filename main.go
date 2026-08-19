@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"tuiple/app"
-	"tuiple/config"
+	"github.com/JohnnyReverb9/tuiple/app"
+	"github.com/JohnnyReverb9/tuiple/config"
 )
 
 // Build-time metadata injected via Makefile's -ldflags. Default values

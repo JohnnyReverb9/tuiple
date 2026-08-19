@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
 )
 
 // fixture builds a directory with two files and a subdirectory holding

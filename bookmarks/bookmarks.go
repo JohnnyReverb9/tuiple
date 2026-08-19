@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
 )
 
 var (

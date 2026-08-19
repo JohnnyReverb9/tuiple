@@ -46,9 +46,16 @@ what is actually in force.
 Go 1.21+.
 
 ```bash
+go install github.com/JohnnyReverb9/tuiple@latest
+```
+
+Or from a clone, which also gets you the Makefile:
+
+```bash
 git clone https://github.com/JohnnyReverb9/tuiple.git
 cd tuiple
-make install          # builds to ~/.local/bin/tuiple
+mv Makefile_ex Makefile     # the tracked copy; your own Makefile stays local
+make install                # builds to ~/.local/bin/tuiple
 ```
 
 `make` alone builds `./tuiple` in place; `make install BIN=/usr/local/bin/tuiple`
@@ -152,7 +159,7 @@ Press `,` to open the settings screen — six sections, arrow keys change values
 `e` edits the text ones, `r` resets the highlighted one. Changes are written
 immediately to `~/.config/tuiple/config.json`; delete that file and the defaults
 come back. Bookmarks live next to it in `bookmarks.json`, the action log in
-`audit.log`. Set `TUIPLE_CONFIG` to run against a different settings file.
+`audit.jsonl`. Set `TUIPLE_CONFIG` to run against a different settings file.
 
 Deleting
 

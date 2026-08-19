@@ -9,11 +9,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/config"
-	"tuiple/filesystem"
-	"tuiple/icons"
-	"tuiple/keys"
-	"tuiple/theme"
+	"github.com/JohnnyReverb9/tuiple/config"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/icons"
+	"github.com/JohnnyReverb9/tuiple/keys"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // DirChangedMsg is emitted when the current directory changes.

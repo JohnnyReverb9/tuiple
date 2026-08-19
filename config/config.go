@@ -16,7 +16,7 @@ import (
 	"strings"
 	"sync"
 
-	"tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
 )
 
 // ── Schema ─────────────────────────────────────────────────────────────

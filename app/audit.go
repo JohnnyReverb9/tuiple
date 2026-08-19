@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
 )
 
 // AuditSource describes how a logged history event came to be: was it

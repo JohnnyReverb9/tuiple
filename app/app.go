@@ -9,22 +9,23 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"tuiple/bookmarks"
-	"tuiple/clipboard"
-	"tuiple/components/filelist"
-	"tuiple/components/git"
-	"tuiple/components/preview"
-	"tuiple/components/preview/mediarender"
-	"tuiple/components/search"
-	"tuiple/components/sidebar"
-	"tuiple/config"
-	"tuiple/filesystem"
-	"tuiple/keys"
-	"tuiple/theme"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/JohnnyReverb9/tuiple/bookmarks"
+	"github.com/JohnnyReverb9/tuiple/clipboard"
+	"github.com/JohnnyReverb9/tuiple/components/filelist"
+	"github.com/JohnnyReverb9/tuiple/components/git"
+	"github.com/JohnnyReverb9/tuiple/components/preview"
+	"github.com/JohnnyReverb9/tuiple/components/preview/mediarender"
+	"github.com/JohnnyReverb9/tuiple/components/search"
+	"github.com/JohnnyReverb9/tuiple/components/sidebar"
+	"github.com/JohnnyReverb9/tuiple/config"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/keys"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 type deleteTickMsg struct{}
@@ -693,7 +694,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if _, err := exec.LookPath("chafa"); err == nil {
 				// Clear screen, show image in high quality, wait for any key, then clear again.
 				// This prevents image artifacts from remaining in the terminal buffer.
-				shCmd := fmt.Sprintf("clear; chafa %q; echo; echo '  Press any key to return...'; stty raw -echo; dd bs=1 count=1 2>/dev/null; stty -raw echo; clear", msg.Path)
+				//
+				// The path goes through shellQuote, not %q: Go's quoting
+				// produces double quotes, and inside those sh still
+				// expands $(...), backticks and $VAR — so a file named
+				// "$(rm -rf ~).png" would run when opened.
+				shCmd := fmt.Sprintf("clear; chafa %s; echo; echo '  Press any key to return...'; stty raw -echo; dd bs=1 count=1 2>/dev/null; stty -raw echo; clear", shellQuote(msg.Path))
 				cmd := exec.Command("sh", "-c", shCmd)
 				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 					return filelist.RefreshListMsg{}
@@ -713,8 +719,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if ext == ".pdf" {
 			if _, err := exec.LookPath("pdftotext"); err == nil {
-				// Extract PDF text and read it with 'less' as fallback
-				shCmd := fmt.Sprintf("pdftotext %q - | less -r", msg.Path)
+				// Extract PDF text and read it with 'less' as fallback.
+				// Single-quoted via shellQuote for the same reason as the
+				// chafa call above.
+				shCmd := fmt.Sprintf("pdftotext %s - | less -r", shellQuote(msg.Path))
 				cmd := exec.Command("sh", "-c", shCmd)
 				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 					return filelist.RefreshListMsg{}

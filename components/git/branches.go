@@ -3,11 +3,12 @@ package git
 import (
 	"fmt"
 	"strings"
-	"tuiple/theme"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // BranchesChangedMsg is emitted by the popup after an operation that

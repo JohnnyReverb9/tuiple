@@ -10,9 +10,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"tuiple/components/filelist"
-	"tuiple/config"
-	"tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/components/filelist"
+	"github.com/JohnnyReverb9/tuiple/config"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
 )
 
 // Bulk rename: the list of names is handed to $EDITOR as a plain text

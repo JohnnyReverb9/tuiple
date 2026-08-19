@@ -15,10 +15,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/components/preview/mediarender"
-	"tuiple/config"
-	"tuiple/filesystem"
-	"tuiple/theme"
+	"github.com/JohnnyReverb9/tuiple/components/preview/mediarender"
+	"github.com/JohnnyReverb9/tuiple/config"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // Size limits live in the settings (Preview tab); these are the values

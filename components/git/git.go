@@ -14,7 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/theme"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // Tab identifies the active tab inside the overlay.

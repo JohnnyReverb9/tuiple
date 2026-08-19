@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
 )
 
 // Archiving shells out to the tools macOS already ships — zip, tar and

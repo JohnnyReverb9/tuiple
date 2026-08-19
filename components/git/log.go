@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/theme"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // logInputMode is the kind of single-line prompt currently shown (if any)

@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"tuiple/clipboard"
-	"tuiple/config"
-	"tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/clipboard"
+	"github.com/JohnnyReverb9/tuiple/config"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
 )
 
 // tempConfig points the config package at a throwaway file so tests

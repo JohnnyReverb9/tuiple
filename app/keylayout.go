@@ -3,7 +3,7 @@ package app
 import (
 	tea "github.com/charmbracelet/bubbletea"
 
-	"tuiple/config"
+	"github.com/JohnnyReverb9/tuiple/config"
 )
 
 // Keyboard-layout normalisation.

@@ -9,9 +9,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/bookmarks"
-	"tuiple/filesystem"
-	"tuiple/theme"
+	"github.com/JohnnyReverb9/tuiple/bookmarks"
+	"github.com/JohnnyReverb9/tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // NavigateMsg is sent when the user selects a sidebar destination.

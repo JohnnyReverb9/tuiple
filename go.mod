@@ -1,4 +1,4 @@
-module tuiple
+module github.com/JohnnyReverb9/tuiple
 
 go 1.25.0
 

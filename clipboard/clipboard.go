@@ -1,7 +1,7 @@
 // Package clipboard manages internal copy/cut operations.
 package clipboard
 
-import "tuiple/filesystem"
+import "github.com/JohnnyReverb9/tuiple/filesystem"
 
 // OpType defines whether the files are copied or cut.
 type OpType int

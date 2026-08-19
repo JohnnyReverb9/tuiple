@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tuiple/theme"
+	"github.com/JohnnyReverb9/tuiple/theme"
 )
 
 // stashTab holds all state for the Stashes tab.
