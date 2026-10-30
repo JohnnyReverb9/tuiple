@@ -32,9 +32,14 @@ a player with seeking and metadata. `chafa` gives you a full-quality image view,
 directory and picks you back up when you exit.
 
 Inside a git repository the list gains status markers, the status bar shows the
-branch, and `Ctrl+G` opens a panel for staging, committing, log, stashes, blame
-and file history. `b` handles branches: checkout, create, rename, merge, rebase,
-push, pull.
+branch, and `Ctrl+G` opens a panel for staging, committing, stashes, blame and
+file history, with a JetBrains-style log: a coloured graph of every branch,
+merges and forks drawn in place, branch and tag labels on their commits. `b` handles branches — checkout (remote branches become
+local tracking ones), create, rename, merge, rebase, track, push, pull — and,
+on its other tabs, remotes (add, change URL, rename, remove, fetch, open in the
+browser) and tags (create, delete, push). Each branch shows how far it is ahead
+of or behind its upstream, a half-done merge or rebase can be continued or
+aborted from there, and outside a repository both panels offer `git init`.
 
 Shortcuts keep working on a Cyrillic keyboard layout — `ф` acts as `a`, `Ж` as
 `:` — while typing (rename, search, commit messages) is never translated. Every
@@ -113,8 +118,8 @@ Git
 
 | Key | |
 | --- | --- |
-| `Ctrl+G` | Git panel (commit, log, stashes) |
-| `b` | Branches |
+| `Ctrl+G` | Git panel (commit, log with branch graph, stashes) |
+| `b` | Branches, remotes and tags (`Tab` switches; `i` runs `git init` outside a repo) |
 | `a` / `R` | Stage / unstage the file under the cursor |
 | `D` | Discard its changes |
 | `i` | Add it to .gitignore |

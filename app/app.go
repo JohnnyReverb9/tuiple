@@ -1786,13 +1786,16 @@ func (m Model) renderHelp() string {
 			{"Esc", "Close panel"},
 		}},
 		helpCat{"Branches popup  (b)", []helpItem{
-			{"↑ ↓  /  k j", "Navigate branches"},
-			{"Enter / l", "Checkout"},
-			{"n", "New branch from HEAD"},
+			{"Tab / 1 2 3", "Branches / Remotes / Tags"},
+			{"Enter / l", "Checkout (remote → local branch)"},
+			{"n / N", "New branch from HEAD / from selected"},
 			{"r / d / D", "Rename / Delete safe / Force-delete"},
 			{"m / R", "Merge into current / Rebase onto"},
-			{"P / p / F", "Push / Pull / Fetch"},
+			{"t", "Track remote branch / untrack local"},
+			{"P / p / U", "Push / Pull / Pull with rebase"},
+			{"F  ·  C / A", "Fetch all  ·  Continue / Abort merge, rebase"},
 			{"/  ·  Ctrl+R", "Filter  ·  Reload"},
+			{"i", "git init (outside a repository)"},
 		}},
 	)
 
@@ -1808,12 +1811,20 @@ func (m Model) renderHelp() string {
 			{"i", "Focus commit message (Esc to leave)"},
 			{"s  ·  Ctrl+S", "Stash  ·  Commit"},
 		}},
-		{"Log tab", []helpItem{
+		{"Log tab  (branch graph)", []helpItem{
+			{"a", "All branches ↔ current branch only"},
+			{"d", "Hide / show the details pane"},
+			{"g / G", "Newest / oldest commit"},
 			{"/", "Filter by subject / author / SHA"},
 			{"r", "Reset HEAD here (soft/mixed/hard)"},
 			{"c / v", "Cherry-pick / Revert"},
 			{"b", "Create branch from commit"},
 			{"Ctrl+R", "Reload log"},
+		}},
+		{"Branches popup: Remotes / Tags", []helpItem{
+			{"a / e / r / d", "Add / Edit URL / Rename / Remove remote"},
+			{"f / o / Enter", "Fetch / Open in browser / Its branches"},
+			{"n / d / P", "New tag at HEAD / Delete / Push tag"},
 		}},
 		{"Stashes tab", []helpItem{
 			{"a / p / D", "Apply / Pop / Drop"},

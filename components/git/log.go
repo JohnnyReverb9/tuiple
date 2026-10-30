@@ -44,6 +44,15 @@ type logTab struct {
 	// reset flow: 0=none, 1=pick mode (s/m/h), 2=confirm (y/n)
 	resetStep int
 	resetMode string // "soft", "mixed", "hard"
+
+	// Graph: currentOnly limits the log to what HEAD reaches (default is
+	// every branch, like the JetBrains log); hideDetail gives the list
+	// the full width.
+	currentOnly bool
+	hideDetail  bool
+	graph       []graphRow // one per entry of commits
+	head        string     // HEAD hash, drawn with a distinct dot
+	remotes     []string   // remote names, to tell remote refs from local ones
 }
 
 // visibleCount returns the number of currently visible commits in the
@@ -112,13 +121,16 @@ func (m *Model) reloadLog() {
 	if m.root == "" {
 		return
 	}
-	commits, err := Log(m.root, 500)
+	commits, err := Log(m.root, 1000, !m.log.currentOnly)
 	if err != nil {
 		m.log.status = "log: " + err.Error()
 		m.log.statusErr = true
 		return
 	}
 	m.log.commits = commits
+	m.log.head, _ = run(m.root, "rev-parse", "-q", "--verify", "HEAD")
+	m.log.remotes, _ = RemoteNames(m.root)
+	m.log.graph = layoutGraph(commits, m.log.head)
 	m.log.applyLogFilter()
 	if m.log.cursor >= m.log.visibleCount() {
 		m.log.cursor = max(0, m.log.visibleCount()-1)
@@ -148,6 +160,17 @@ func (m *Model) refreshLogDetail() {
 		m.log.detail = out
 	}
 	m.log.detailLines = strings.Split(m.log.detail, "\n")
+}
+
+// logSelect moves the cursor to the commit with the given hash, if shown.
+func (m *Model) logSelect(hash string) {
+	for i := 0; i < m.log.visibleCount(); i++ {
+		if c, _ := m.log.commitAt(i); c.Hash == hash {
+			m.log.cursor = i
+			break
+		}
+	}
+	m.refreshLogDetail()
 }
 
 func (m *Model) logCurrent() (Commit, bool) {
@@ -282,6 +305,32 @@ func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
 		m.log.status = "reloaded"
 		m.log.statusErr = false
 		return m, nil, true
+	case "a":
+		m.log.currentOnly = !m.log.currentOnly
+		hash := ""
+		if c, ok := m.logCurrent(); ok {
+			hash = c.Hash
+		}
+		m.reloadLog()
+		m.logSelect(hash)
+		if m.log.currentOnly {
+			m.log.status = "showing " + m.branch + " only (a: all branches)"
+		} else {
+			m.log.status = "showing all branches (a: current only)"
+		}
+		m.log.statusErr = false
+		return m, nil, true
+	case "d":
+		m.log.hideDetail = !m.log.hideDetail
+		return m, nil, true
+	case "g":
+		m.log.cursor = 0
+		m.refreshLogDetail()
+		return m, nil, true
+	case "G":
+		m.log.cursor = max(0, m.log.visibleCount()-1)
+		m.refreshLogDetail()
+		return m, nil, true
 	case "c":
 		m.logCherryPick()
 		return m, nil, true
@@ -409,31 +458,26 @@ func (m Model) renderLogTab(w, h int) string {
 		return m.renderLogList(w, max(1, h))
 	}
 
-	listW := clamp(w*45/100, 30, 70)
-	if listW > w-10 {
-		listW = w - 10
+	var top string
+	if m.log.hideDetail || w < 70 {
+		top = m.renderLogList(w, topH)
+	} else {
+		listW := w * 62 / 100
+		detailW := w - listW - 1
+		top = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.renderLogList(listW, topH), renderVSep(topH), m.renderLogDetail(detailW, topH))
 	}
-	detailW := w - listW - 1
-	if detailW < 1 {
-		detailW = 1
-	}
-
-	listView := m.renderLogList(listW, topH)
-	detailView := m.renderLogDetail(detailW, topH)
-	sep := renderVSep(topH)
-
-	top := lipgloss.JoinHorizontal(lipgloss.Top, listView, sep, detailView)
-	status := m.renderLogStatus(w)
-
-	return lipgloss.JoinVertical(lipgloss.Left, top, status)
+	return lipgloss.JoinVertical(lipgloss.Left, top, m.renderLogStatus(w))
 }
 
 func (m Model) renderLogList(w, h int) string {
-	// Header shows the match count when a filter is active so the user
-	// always sees how many commits the current query catches.
-	headerText := "  Commits"
+	scope := "all branches"
+	if m.log.currentOnly {
+		scope = m.branch
+	}
+	headerText := "  Log · " + scope
 	if m.log.filter != "" {
-		headerText = fmt.Sprintf("  Commits  %d / %d match", m.log.visibleCount(), len(m.log.commits))
+		headerText = fmt.Sprintf("  Log · %s  %d / %d match", scope, m.log.visibleCount(), len(m.log.commits))
 	}
 	header := theme.ListHeader.Width(w).Render(headerText)
 
@@ -447,14 +491,144 @@ func (m Model) renderLogList(w, h int) string {
 	default:
 		visible := max(1, h-1)
 		start, end := windowAround(m.log.cursor, total, visible)
+		graphW := m.graphWidth(start, end, w)
 		for i := start; i < end; i++ {
-			lines = append(lines, m.renderLogItem(i, w))
+			lines = append(lines, m.renderLogItem(i, w, graphW))
 		}
 	}
 	return padLines(lines, w, h)
 }
 
-func (m Model) renderLogItem(i, w int) string {
+// laneColors is the palette the graph cycles through, one colour per lane.
+var laneColors = []lipgloss.AdaptiveColor{
+	theme.AccentBlue,
+	theme.AccentGreen,
+	theme.AccentOrange,
+	theme.AccentMagenta,
+	theme.AccentCyan,
+	theme.AccentYellow,
+	theme.AccentRed,
+}
+
+func laneStyle(color int) lipgloss.Style {
+	if color < 0 {
+		return lipgloss.NewStyle()
+	}
+	return lipgloss.NewStyle().Foreground(laneColors[color%len(laneColors)])
+}
+
+// graphWidth is the column width the graph needs for the visible rows,
+// capped at a quarter of the list. 0 while a filter hides the graph.
+func (m Model) graphWidth(start, end, w int) int {
+	if m.log.filter != "" || len(m.log.graph) != len(m.log.commits) {
+		return 0
+	}
+	need := 0
+	for i := start; i < end; i++ {
+		need = max(need, 2*len(m.log.graph[i].cells))
+	}
+	return min(need, max(6, w/4))
+}
+
+// renderGraph draws row i of the graph in exactly width cells.
+func (m Model) renderGraph(i, width int, bg func(lipgloss.Style) lipgloss.Style) string {
+	row := m.log.graph[i]
+	var b strings.Builder
+	used := 0
+	for _, cell := range row.cells {
+		if used+2 > width {
+			break
+		}
+		glyph := laneStyle(cell.glyphColor)
+		if cell.glyph == glyphCommit || cell.glyph == glyphHead {
+			glyph = glyph.Bold(true)
+		}
+		b.WriteString(bg(glyph).Render(string(cell.glyph)))
+		b.WriteString(bg(laneStyle(cell.spacerColor)).Render(string(cell.spacer)))
+		used += 2
+	}
+	if used < width {
+		ell := " "
+		if 2*len(row.cells) > width {
+			ell = "…"
+		}
+		b.WriteString(bg(theme.Dim).Render(ell + strings.Repeat(" ", width-used-1)))
+	}
+	return b.String()
+}
+
+// refLabel is one decoration shown before a commit subject.
+type refLabel struct {
+	text  string
+	color lipgloss.AdaptiveColor
+	bold  bool
+}
+
+// refLabels turns git decorations into labels. A local branch and its
+// remote counterpart on the same commit become one "origin & main"
+// label, the way the JetBrains log shows them.
+func (m Model) refLabels(c Commit) []refLabel {
+	isRemote := func(ref string) bool {
+		for _, r := range m.log.remotes {
+			if strings.HasPrefix(ref, r+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	var locals, remotes, tags []string
+	current, detached := "", false
+	for _, ref := range c.Refs {
+		switch {
+		case ref == "HEAD":
+			detached = true
+		case strings.HasPrefix(ref, "HEAD -> "):
+			current = strings.TrimPrefix(ref, "HEAD -> ")
+			locals = append(locals, current)
+		case strings.HasPrefix(ref, "tag: "):
+			tags = append(tags, strings.TrimPrefix(ref, "tag: "))
+		case isRemote(ref):
+			remotes = append(remotes, ref)
+		default:
+			locals = append(locals, ref)
+		}
+	}
+
+	var out []refLabel
+	if detached {
+		out = append(out, refLabel{"HEAD", theme.AccentYellow, true})
+	}
+	paired := map[string]bool{}
+	for _, l := range locals {
+		var with []string
+		for _, r := range remotes {
+			if strings.HasSuffix(r, "/"+l) && !paired[r] {
+				with = append(with, strings.TrimSuffix(r, "/"+l))
+				paired[r] = true
+			}
+		}
+		text := l
+		if len(with) > 0 {
+			text = strings.Join(with, " & ") + " & " + l
+		}
+		if l == current {
+			out = append(out, refLabel{"▸ " + text, theme.AccentYellow, true})
+		} else {
+			out = append(out, refLabel{text, theme.AccentGreen, false})
+		}
+	}
+	for _, r := range remotes {
+		if !paired[r] {
+			out = append(out, refLabel{r, theme.AccentCyan, false})
+		}
+	}
+	for _, t := range tags {
+		out = append(out, refLabel{"◆ " + t, theme.AccentMagenta, false})
+	}
+	return out
+}
+
+func (m Model) renderLogItem(i, w, graphW int) string {
 	c, ok := m.log.commitAt(i)
 	if !ok {
 		return strings.Repeat(" ", w)
@@ -467,45 +641,71 @@ func (m Model) renderLogItem(i, w int) string {
 		}
 		return s
 	}
+	gap := func(n int) string { return apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", n)) }
 
-	// Author moves to the right-hand Details pane where the full
-	// `git show` output already prints it; the list shows SHA + subject
-	// + relative date so every row is one visual line.
+	// Columns, JetBrains style: graph · refs + subject · author · date.
+	// Author goes first and then the date when the list gets narrow.
 	const (
-		shaW       = 8
-		dateW      = 14
-		spaceLead  = 1
-		sepSHASubj = 1
-		sepSubjDate = 2
-		spaceTrail = 1
+		authorW = 14
+		dateW   = 16
 	)
-	subjectW := w - (spaceLead + shaW + sepSHASubj + sepSubjDate + dateW + spaceTrail)
-	includeDate := subjectW >= 5
-	if !includeDate {
-		subjectW = w - (spaceLead + shaW + sepSHASubj + spaceTrail)
+	subjectW := w - 1 - graphW - 1 - 1 // lead, graph, gap, trail
+	showAuthor := subjectW-authorW-2 >= 24
+	if showAuthor {
+		subjectW -= authorW + 2
 	}
-	if subjectW < 1 {
-		subjectW = 1
+	showDate := subjectW-dateW-2 >= 20
+	if showDate {
+		subjectW -= dateW + 2
+	}
+	subjectW = max(1, subjectW)
+
+	cells := []string{gap(1)}
+	if graphW > 0 {
+		cells = append(cells, m.renderGraph(m.logIndex(i), graphW, apply), gap(1))
 	}
 
-	cells := []string{
-		apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", spaceLead)),
-		apply(lipgloss.NewStyle().Foreground(theme.AccentYellow)).
-			Width(shaW).Render(truncatePlain(c.ShortSHA, shaW)),
-		apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", sepSHASubj)),
-		apply(lipgloss.NewStyle().Foreground(theme.FgColor)).
-			Width(subjectW).Render(truncatePlain(c.Subject, subjectW)),
+	// Ref labels eat into the subject column, but never all of it.
+	used := 0
+	for _, l := range m.refLabels(c) {
+		lw := lipgloss.Width(l.text) + 2
+		if used+lw > subjectW*2/3 {
+			break
+		}
+		style := lipgloss.NewStyle().Foreground(l.color).Background(theme.BgLightColor).Bold(l.bold)
+		cells = append(cells, style.Render(" "+l.text+" "), gap(1))
+		used += lw + 1
 	}
-	if includeDate {
-		cells = append(cells,
-			apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", sepSubjDate)),
-			apply(lipgloss.NewStyle().Foreground(theme.FgDimColor)).
-				Width(dateW).Render(truncatePlain(c.RelDate, dateW)),
-		)
-	}
-	cells = append(cells, apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", spaceTrail)))
 
+	subjFg := theme.FgColor
+	if c.IsMerge() {
+		subjFg = theme.FgDimColor // merges recede, as in the JetBrains log
+	}
+	restW := max(1, subjectW-used)
+	cells = append(cells, apply(lipgloss.NewStyle().Foreground(subjFg)).
+		Width(restW).Render(truncatePlain(c.Subject, restW)))
+	if showAuthor {
+		cells = append(cells, gap(2), apply(lipgloss.NewStyle().Foreground(theme.FgDimColor)).
+			Width(authorW).Render(truncatePlain(c.Author, authorW)))
+	}
+	if showDate {
+		date := c.Date
+		if date == "" {
+			date = c.RelDate
+		}
+		cells = append(cells, gap(2), apply(lipgloss.NewStyle().Foreground(theme.FgDimColor)).
+			Width(dateW).Render(truncatePlain(date, dateW)))
+	}
+	cells = append(cells, gap(1))
 	return strings.Join(cells, "")
+}
+
+// logIndex maps a visible row to its index in commits (and graph).
+func (m Model) logIndex(i int) int {
+	if m.log.filter != "" && i < len(m.log.filtered) {
+		return m.log.filtered[i]
+	}
+	return i
 }
 
 func (m Model) renderLogDetail(w, h int) string {
