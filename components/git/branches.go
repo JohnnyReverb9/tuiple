@@ -58,6 +58,7 @@ const (
 	pendingDeleteTag
 	pendingAbort
 	pendingInit
+	pendingSmartCheckout
 )
 
 // opKind identifies an async (network) git operation.
@@ -131,7 +132,14 @@ type BranchesPopup struct {
 
 	pending     pendingConfirm
 	pendingName string // branch / remote / tag the pending op targets
-	pendingItem Branch // full branch for pendingDeleteRemoteBranch
+	pendingItem Branch // full branch for pendingDeleteRemoteBranch / pendingSmartCheckout
+
+	rows      []branchRow     // the branches view as drawn: sections, folders, branches
+	collapsed map[string]bool // folded branch folders, by key
+	recent    []string        // recently checked-out local branches
+
+	compare    *Comparison // non-nil while "compare with current" is shown
+	compareOff int
 
 	status    string
 	statusErr bool
@@ -181,6 +189,7 @@ func (m *BranchesPopup) Start(path string) tea.Cmd {
 	m.busy = ""
 	m.inputMode = branchesInputNone
 	m.draft = ""
+	m.compare = nil
 	m.input.Blur()
 	m.open()
 	return nil
@@ -218,16 +227,43 @@ func (m *BranchesPopup) reload() {
 	}
 	m.loadErr = nil
 	m.branches = branches
+	m.recent = RecentBranches(m.repo, 5)
 	m.remotes, _ = Remotes(m.repo)
 	m.tags, _ = ListTags(m.repo)
 	m.applyFilter()
-	m.clampCursor()
 }
 
+// clampCursor keeps the cursor inside the list and off section headers.
 func (m *BranchesPopup) clampCursor() {
 	c := &m.cursors[m.view]
 	if *c >= m.visibleCount() {
 		*c = max(0, m.visibleCount()-1)
+	}
+	if !m.selectable(*c) {
+		m.move(1)
+		if !m.selectable(*c) {
+			m.move(-1)
+		}
+	}
+}
+
+// selectable reports whether visible row i can hold the cursor (every
+// row except the section headers of the branches view).
+func (m BranchesPopup) selectable(i int) bool {
+	if m.view != viewBranches {
+		return true
+	}
+	return i >= 0 && i < len(m.rows) && m.rows[i].kind != rowSection
+}
+
+// move steps the cursor by delta, skipping section headers.
+func (m *BranchesPopup) move(delta int) {
+	c := m.cursors[m.view]
+	for i := c + delta; i >= 0 && i < m.visibleCount(); i += delta {
+		if m.selectable(i) {
+			m.cursors[m.view] = i
+			return
+		}
 	}
 }
 
@@ -253,22 +289,26 @@ func (m BranchesPopup) itemCount() int {
 }
 
 func (m *BranchesPopup) applyFilter() {
-	if m.filter == "" {
-		m.filtered = nil
-		return
-	}
-	needle := strings.ToLower(m.filter)
-	filtered := make([]int, 0, m.itemCount())
-	for i := 0; i < m.itemCount(); i++ {
-		if strings.Contains(strings.ToLower(m.itemName(i)), needle) {
-			filtered = append(filtered, i)
+	m.filtered = nil
+	if m.filter != "" {
+		needle := strings.ToLower(m.filter)
+		m.filtered = make([]int, 0, m.itemCount())
+		for i := 0; i < m.itemCount(); i++ {
+			if strings.Contains(strings.ToLower(m.itemName(i)), needle) {
+				m.filtered = append(m.filtered, i)
+			}
 		}
 	}
-	m.filtered = filtered
+	if m.view == viewBranches {
+		m.buildRows()
+	}
 	m.clampCursor()
 }
 
 func (m BranchesPopup) visibleCount() int {
+	if m.view == viewBranches {
+		return len(m.rows)
+	}
 	if m.filtered != nil {
 		return len(m.filtered)
 	}
@@ -276,7 +316,14 @@ func (m BranchesPopup) visibleCount() int {
 }
 
 // index maps a visible row to an index into the current view's list.
+// In the branches view, section and folder rows map to nothing.
 func (m BranchesPopup) index(i int) (int, bool) {
+	if m.view == viewBranches {
+		if i < 0 || i >= len(m.rows) || m.rows[i].kind != rowBranch {
+			return 0, false
+		}
+		return m.rows[i].branch, true
+	}
 	if m.filtered != nil {
 		if i < 0 || i >= len(m.filtered) {
 			return 0, false
@@ -300,6 +347,15 @@ func (m BranchesPopup) selected() (Branch, bool) {
 		return Branch{}, false
 	}
 	return m.branches[i], true
+}
+
+// selectedFolder returns the folder row under the cursor, if any.
+func (m BranchesPopup) selectedFolder() (branchRow, bool) {
+	c := m.cursor()
+	if m.view != viewBranches || c < 0 || c >= len(m.rows) || m.rows[c].kind != rowFolder {
+		return branchRow{}, false
+	}
+	return m.rows[c], true
 }
 
 func (m BranchesPopup) selectedRemote() (Remote, bool) {
@@ -339,7 +395,115 @@ func (m *BranchesPopup) setView(v branchesView) {
 	}
 	m.view = v
 	m.filter = ""
-	m.filtered = nil
+	m.applyFilter()
+}
+
+// ── Branch tree ───────────────────────────────────────────────────────
+//
+// Like the JetBrains branches popup, the list is split into Recent, Local
+// and one section per remote, and branches sharing a prefix ("feature/")
+// are gathered in a folder that Enter / Space folds. A filter flattens
+// the tree into plain matches.
+
+type rowKind int
+
+const (
+	rowSection rowKind = iota
+	rowFolder
+	rowBranch
+)
+
+type branchRow struct {
+	kind   rowKind
+	branch int    // index into branches (rowBranch)
+	label  string // text shown: section title, folder prefix, or branch name without its folder
+	key    string // folder identity for collapsing
+	count  int    // branches in a folder
+	depth  int    // 1 inside a folder
+}
+
+func (m *BranchesPopup) buildRows() {
+	m.rows = m.rows[:0]
+	if m.filtered != nil {
+		for _, i := range m.filtered {
+			m.rows = append(m.rows, branchRow{kind: rowBranch, branch: i, label: m.branches[i].Name})
+		}
+		return
+	}
+
+	var locals []int
+	byRemote := map[string][]int{}
+	var remoteOrder []string
+	localIdx := map[string]int{}
+	for i, b := range m.branches {
+		if b.IsRemote {
+			if _, ok := byRemote[b.Remote]; !ok {
+				remoteOrder = append(remoteOrder, b.Remote)
+			}
+			byRemote[b.Remote] = append(byRemote[b.Remote], i)
+		} else {
+			locals = append(locals, i)
+			localIdx[b.Name] = i
+		}
+	}
+
+	var recent []int
+	for _, name := range m.recent {
+		if i, ok := localIdx[name]; ok {
+			recent = append(recent, i)
+		}
+	}
+	if len(recent) > 0 {
+		m.rows = append(m.rows, branchRow{kind: rowSection, label: "Recent"})
+		for _, i := range recent {
+			m.rows = append(m.rows, branchRow{kind: rowBranch, branch: i, label: m.branches[i].Name})
+		}
+	}
+	if len(locals) > 0 {
+		m.rows = append(m.rows, branchRow{kind: rowSection, label: "Local"})
+		m.addGrouped("local", locals, func(b Branch) string { return b.Name })
+	}
+	for _, r := range remoteOrder {
+		m.rows = append(m.rows, branchRow{kind: rowSection, label: "Remote · " + r})
+		m.addGrouped("remote:"+r, byRemote[r], Branch.LocalName)
+	}
+}
+
+// addGrouped appends branches (sorted by name), folding runs that share
+// a first path segment into a folder.
+func (m *BranchesPopup) addGrouped(scope string, idxs []int, name func(Branch) string) {
+	for i := 0; i < len(idxs); {
+		full := name(m.branches[idxs[i]])
+		prefix, _, nested := strings.Cut(full, "/")
+		j := i + 1
+		for nested && j < len(idxs) && strings.HasPrefix(name(m.branches[idxs[j]]), prefix+"/") {
+			j++
+		}
+		if j-i < 2 {
+			m.rows = append(m.rows, branchRow{kind: rowBranch, branch: idxs[i], label: full})
+			i++
+			continue
+		}
+		key := scope + "/" + prefix
+		m.rows = append(m.rows, branchRow{kind: rowFolder, label: prefix + "/", key: key, count: j - i})
+		if !m.collapsed[key] {
+			for _, idx := range idxs[i:j] {
+				m.rows = append(m.rows, branchRow{
+					kind: rowBranch, branch: idx, depth: 1,
+					label: strings.TrimPrefix(name(m.branches[idx]), prefix+"/"),
+				})
+			}
+		}
+		i = j
+	}
+}
+
+func (m *BranchesPopup) toggleFolder(key string) {
+	if m.collapsed == nil {
+		m.collapsed = map[string]bool{}
+	}
+	m.collapsed[key] = !m.collapsed[key]
+	m.buildRows()
 	m.clampCursor()
 }
 
@@ -356,6 +520,12 @@ func (m *BranchesPopup) doSwitch() {
 	}
 	name, err := SwitchTo(m.repo, b)
 	if err != nil {
+		if IsLocalChangesError(err) {
+			m.pending = pendingSmartCheckout
+			m.pendingItem = b
+			m.setStatus("Local changes would be overwritten. Smart checkout — stash, switch, restore them? (y/n)", true)
+			return
+		}
 		m.setStatus(shortGitError(err), true)
 		return
 	}
@@ -365,6 +535,40 @@ func (m *BranchesPopup) doSwitch() {
 		m.setStatus("switched to "+name, false)
 	}
 	m.reload()
+}
+
+// doSmartSwitch checks out b carrying the uncommitted changes along.
+func (m *BranchesPopup) doSmartSwitch(b Branch) {
+	name, conflicted, err := SmartSwitch(m.repo, b)
+	switch {
+	case err != nil:
+		m.setStatus(shortGitError(err)+" — your changes are back where they were", true)
+	case conflicted:
+		m.setStatus("switched to "+name+"; your changes conflict with it — resolve the files (a copy stays in the stash)", true)
+	default:
+		m.setStatus("switched to "+name+" with your changes", false)
+	}
+	m.reload()
+}
+
+// doCompare opens the comparison of the selected branch with HEAD.
+func (m *BranchesPopup) doCompare() {
+	b, ok := m.selected()
+	if !ok {
+		return
+	}
+	if b.IsCurrent || m.head.Unborn {
+		m.setStatus("pick a branch other than the current one", true)
+		return
+	}
+	cmp, err := Compare(m.repo, "HEAD", b.Name, 300)
+	if err != nil {
+		m.setStatus(shortGitError(err), true)
+		return
+	}
+	cmp.Base = m.head.Label()
+	m.compare = &cmp
+	m.compareOff = 0
 }
 
 func (m *BranchesPopup) doCreate(name, from string) {
@@ -854,6 +1058,9 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 		return m, nil
 	}
 	key := keyMsg.String()
+	if m.compare != nil {
+		return m.updateCompare(key)
+	}
 
 	// Keys that work in every state, including busy and outside a repo.
 	switch key {
@@ -861,20 +1068,19 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 		m.Stop()
 		return m, nil
 	case "up", "k":
-		if m.cursors[m.view] > 0 {
-			m.cursors[m.view]--
-		}
+		m.move(-1)
 		return m, nil
 	case "down", "j":
-		if m.cursors[m.view] < m.visibleCount()-1 {
-			m.cursors[m.view]++
-		}
+		m.move(1)
 		return m, nil
 	case "home", "g":
 		m.cursors[m.view] = 0
+		m.clampCursor()
 		return m, nil
 	case "end", "G":
 		m.cursors[m.view] = max(0, m.visibleCount()-1)
+		m.move(0)
+		m.clampCursor()
 		return m, nil
 	case "tab", "right":
 		m.setView((m.view + 1) % branchesView(len(branchesViewTitles)))
@@ -939,9 +1145,18 @@ func changed() tea.Msg { return BranchesChangedMsg{} }
 
 func (m BranchesPopup) updateBranchesKey(key string) (BranchesPopup, tea.Cmd) {
 	switch key {
-	case "enter", "l":
+	case "enter", "l", " ":
+		if f, ok := m.selectedFolder(); ok {
+			m.toggleFolder(f.key)
+			return m, nil
+		}
+		if key == " " {
+			return m, nil
+		}
 		m.doSwitch()
 		return m, changed
+	case "c":
+		m.doCompare()
 	case "n":
 		return m, m.prompt(branchesInputCreate, "", "new branch name (from "+m.head.Label()+")")
 	case "N":
@@ -1184,6 +1399,8 @@ func (m BranchesPopup) updatePending(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 			m.doAbort()
 		case pendingInit:
 			m.doInit()
+		case pendingSmartCheckout:
+			m.doSmartSwitch(m.pendingItem)
 		}
 		return m, changed
 	case "D":
@@ -1236,6 +1453,9 @@ func (m BranchesPopup) renderHeader(w int) string {
 	left := "  Git"
 	if m.repo != "" {
 		left += "   " + m.head.Label()
+	}
+	if m.compare != nil {
+		left += "  ⇄  " + m.compare.Other
 	}
 	right := ""
 	if m.head.Op != "" {
@@ -1293,11 +1513,18 @@ func (m BranchesPopup) renderBody(w, h int) string {
 
 	lines := []string{}
 	total := m.visibleCount()
-	if total == 0 {
+	switch {
+	case m.compare != nil:
+		lines = m.renderCompare(w, listH)
+	case total == 0:
 		lines = append(lines, theme.Dim.Render("  "+m.emptyText()))
-	} else {
+	default:
 		start, end := windowAround(m.cursor(), total, listH)
 		for i := start; i < end; i++ {
+			if m.view == viewBranches {
+				lines = append(lines, m.renderBranchRow(m.rows[i], i == m.cursor(), w))
+				continue
+			}
 			idx, _ := m.index(i)
 			lines = append(lines, m.renderItem(idx, i == m.cursor(), w))
 		}
@@ -1343,7 +1570,24 @@ func (m BranchesPopup) renderItem(idx int, isCursor bool, w int) string {
 		return renderRow(isCursor, "  ", t.Name, theme.AccentYellow, right, w)
 	}
 
-	b := m.branches[idx]
+	return ""
+}
+
+// renderBranchRow draws one row of the branches view: a section title,
+// a folder, or a branch (indented inside its folder).
+func (m BranchesPopup) renderBranchRow(r branchRow, isCursor bool, w int) string {
+	switch r.kind {
+	case rowSection:
+		return theme.ListHeader.Width(w).Render("  " + r.label)
+	case rowFolder:
+		arrow := "▾ "
+		if m.collapsed[r.key] {
+			arrow = "▸ "
+		}
+		return renderRow(isCursor, "  ", arrow+r.label, theme.AccentBlue, fmt.Sprintf("%d", r.count), w)
+	}
+
+	b := m.branches[r.branch]
 	mark := "  "
 	if b.IsCurrent {
 		mark = " *"
@@ -1367,7 +1611,79 @@ func (m BranchesPopup) renderItem(idx int, isCursor bool, w int) string {
 	if b.Unborn {
 		right = append(right, "no commits yet")
 	}
-	return renderRow(isCursor, mark, b.Name, nameFg, strings.Join(right, "  "), w)
+	label := strings.Repeat("  ", r.depth) + r.label
+	return renderRow(isCursor, mark, label, nameFg, strings.Join(right, "  "), w)
+}
+
+// ── Compare with current ──────────────────────────────────────────────
+
+func (m BranchesPopup) updateCompare(key string) (BranchesPopup, tea.Cmd) {
+	lines := len(m.compareLines(80))
+	switch key {
+	case "esc", "q", "c", "backspace":
+		m.compare = nil
+	case "ctrl+c", "ctrl+b":
+		m.compare = nil
+		m.Stop()
+	case "down", "j":
+		m.compareOff = min(m.compareOff+1, max(0, lines-1))
+	case "up", "k":
+		m.compareOff = max(0, m.compareOff-1)
+	case "pgdown", "ctrl+d":
+		m.compareOff = min(m.compareOff+scrollStep, max(0, lines-1))
+	case "pgup", "ctrl+u":
+		m.compareOff = max(0, m.compareOff-scrollStep)
+	case "m", "R":
+		other := m.compare.Other
+		m.compare = nil
+		m.pendingName = other
+		if key == "m" {
+			m.pending = pendingMerge
+			m.setStatus(fmt.Sprintf("Merge %q into %s? (y/n)", other, m.head.Label()), false)
+		} else {
+			m.pending = pendingRebase
+			m.setStatus(fmt.Sprintf("Rebase %s onto %q? (y/n)", m.head.Label(), other), false)
+		}
+	}
+	return m, nil
+}
+
+// compareLines lays out the comparison: what the other branch has that
+// the current one lacks, then the reverse, JetBrains-style.
+func (m BranchesPopup) compareLines(w int) []string {
+	c := m.compare
+	title := lipgloss.NewStyle().Foreground(theme.AccentBlue).Bold(true)
+	var out []string
+	section := func(head string, commits []Commit) {
+		out = append(out, title.Render(" "+head))
+		if len(commits) == 0 {
+			out = append(out, theme.Dim.Render("   nothing"))
+		}
+		for _, cm := range commits {
+			sha := lipgloss.NewStyle().Foreground(theme.AccentYellow).Render(cm.ShortSHA)
+			meta := theme.Dim.Render("  " + cm.Author + " · " + cm.Date)
+			subjW := max(5, w-4-lipgloss.Width(cm.ShortSHA)-lipgloss.Width(meta))
+			out = append(out, "   "+sha+" "+truncatePlain(cm.Subject, subjW)+meta)
+		}
+		out = append(out, "")
+	}
+	section(fmt.Sprintf("In %s, not in %s  (%d)", c.Other, c.Base, len(c.OnlyOther)), c.OnlyOther)
+	section(fmt.Sprintf("In %s, not in %s  (%d)", c.Base, c.Other, len(c.OnlyBase)), c.OnlyBase)
+	if c.Stat != "" {
+		out = append(out, theme.Dim.Render(" Changes "+c.Other+" brings: "+c.Stat))
+	}
+	return out
+}
+
+func (m BranchesPopup) renderCompare(w, h int) []string {
+	lines := m.compareLines(w)
+	start := min(m.compareOff, max(0, len(lines)-1))
+	end := min(len(lines), start+h)
+	out := make([]string, 0, h)
+	for _, l := range lines[start:end] {
+		out = append(out, lipgloss.NewStyle().Width(w).MaxWidth(w).Render(l))
+	}
+	return out
 }
 
 // renderRow lays out one list row: mark, name, and dim right-hand info
@@ -1474,8 +1790,10 @@ func (m BranchesPopup) renderFooter(w int) string {
 		hints = []string{"a add", "e edit URL", "r rename", "d remove", "f fetch", "o open in browser", "Enter its branches", "Tab view", "Esc close"}
 	case m.view == viewTags:
 		hints = []string{"n new tag", "d delete", "P push tag", "F fetch all", "/ filter", "Tab view", "Esc close"}
+	case m.compare != nil:
+		hints = []string{"j/k scroll", "m merge it into current", "R rebase current onto it", "Esc back"}
 	default:
-		hints = []string{"Enter checkout", "n/N new", "r rename", "d/D delete", "m merge", "R rebase", "t track", "P push", "p/U pull", "F fetch", "/ filter", "Tab view", "Esc close"}
+		hints = []string{"Enter checkout", "c compare", "n/N new", "r rename", "d/D delete", "m merge", "R rebase", "t track", "P push", "p/U pull", "F fetch", "/ filter", "Tab view", "Esc close"}
 	}
 
 	// Wrap the hints onto as many lines as the width needs.

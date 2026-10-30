@@ -1787,7 +1787,9 @@ func (m Model) renderHelp() string {
 		}},
 		helpCat{"Branches popup  (b)", []helpItem{
 			{"Tab / 1 2 3", "Branches / Remotes / Tags"},
-			{"Enter / l", "Checkout (remote → local branch)"},
+			{"Enter / l", "Checkout (smart if changes block)"},
+			{"Enter / Space", "Fold / unfold a feature/ folder"},
+			{"c", "Compare with current branch"},
 			{"n / N", "New branch from HEAD / from selected"},
 			{"r / d / D", "Rename / Delete safe / Force-delete"},
 			{"m / R", "Merge into current / Rebase onto"},
@@ -1814,6 +1816,7 @@ func (m Model) renderHelp() string {
 		{"Log tab  (branch graph)", []helpItem{
 			{"a", "All branches ↔ current branch only"},
 			{"d", "Hide / show the details pane"},
+			{"Enter", "Actions: checkout, merge, rebase…"},
 			{"g / G", "Newest / oldest commit"},
 			{"/", "Filter by subject / author / SHA"},
 			{"r", "Reset HEAD here (soft/mixed/hard)"},

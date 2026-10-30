@@ -286,15 +286,7 @@ func Log(repo string, limit int, all bool) ([]Commit, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	format := "%H%x00%h%x00%P%x00%an%x00%ar%x00%ad%x00%D%x00%s"
-	args := []string{"log",
-		"--no-color",
-		"--date-order",
-		"--date=format:%d.%m.%Y %H:%M",
-		"--decorate=short",
-		"-n", strconv.Itoa(limit),
-		"--format=" + format,
-	}
+	args := append(logArgs(), "--date-order", "-n", strconv.Itoa(limit))
 	if all {
 		args = append(args, "--branches", "--remotes", "--tags", "HEAD")
 	}
@@ -306,10 +298,23 @@ func Log(repo string, limit int, all bool) ([]Commit, error) {
 		}
 		return nil, err
 	}
-	if out == "" {
-		return nil, nil
-	}
+	return parseLog(out), nil
+}
 
+// logArgs is the `git log` invocation parseLog understands.
+func logArgs() []string {
+	return []string{"log",
+		"--no-color",
+		"--date=format:%d.%m.%Y %H:%M",
+		"--decorate=short",
+		"--format=%H%x00%h%x00%P%x00%an%x00%ar%x00%ad%x00%D%x00%s",
+	}
+}
+
+func parseLog(out string) []Commit {
+	if out == "" {
+		return nil
+	}
 	var commits []Commit
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.SplitN(line, "\x00", 8)
@@ -332,7 +337,37 @@ func Log(repo string, limit int, all bool) ([]Commit, error) {
 		}
 		commits = append(commits, c)
 	}
-	return commits, nil
+	return commits
+}
+
+// Comparison is what two branches have that the other lacks.
+type Comparison struct {
+	Base, Other string
+	OnlyOther   []Commit // reachable from Other, not from Base
+	OnlyBase    []Commit // reachable from Base, not from Other
+	Stat        string   // `git diff --shortstat Base...Other`
+}
+
+// Compare lists the commits that differ between base and other (the
+// JetBrains "Compare with Current"), newest first, at most limit each.
+func Compare(repo, base, other string, limit int) (Comparison, error) {
+	cmp := Comparison{Base: base, Other: other}
+	for _, side := range []struct {
+		rng  string
+		dest *[]Commit
+	}{
+		{base + ".." + other, &cmp.OnlyOther},
+		{other + ".." + base, &cmp.OnlyBase},
+	} {
+		out, err := run(repo, append(logArgs(), "--topo-order", "-n", strconv.Itoa(limit), side.rng, "--")...)
+		if err != nil {
+			return cmp, err
+		}
+		*side.dest = parseLog(out)
+	}
+	cmp.Stat, _ = run(repo, "diff", "--shortstat", base+"..."+other, "--")
+	cmp.Stat = strings.TrimSpace(cmp.Stat)
+	return cmp, nil
 }
 
 // CommitDetail returns `git show` output for the given commit, including
@@ -446,6 +481,82 @@ func SwitchTo(repo string, b Branch) (string, error) {
 	}
 	_, err := run(repo, "switch", "-c", local, "--track", b.Name)
 	return local, err
+}
+
+// IsLocalChangesError reports whether err is git refusing to check out
+// because uncommitted changes would be overwritten.
+func IsLocalChangesError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "would be overwritten by") ||
+		strings.Contains(msg, "your local changes")
+}
+
+// SmartSwitch is the JetBrains "smart checkout": stash the uncommitted
+// changes (untracked files too), check out b, and bring the changes back.
+// If they conflict with the new branch, the switch stands, the conflicts
+// are left in the working tree and the stash is kept as a backup —
+// conflicted reports that. If the checkout itself fails, the changes are
+// restored where they were.
+func SmartSwitch(repo string, b Branch) (local string, conflicted bool, err error) {
+	before, _ := run(repo, "rev-parse", "-q", "--verify", "refs/stash")
+	if _, err := run(repo, "stash", "push", "--include-untracked", "-m", "tuiple: smart checkout to "+b.Name); err != nil {
+		return "", false, err
+	}
+	after, _ := run(repo, "rev-parse", "-q", "--verify", "refs/stash")
+	stashed := after != "" && after != before
+
+	local, err = SwitchTo(repo, b)
+	if err != nil {
+		if stashed {
+			if _, perr := run(repo, "stash", "pop", "--index"); perr != nil {
+				_, _ = run(repo, "stash", "pop")
+			}
+		}
+		return local, false, err
+	}
+	if !stashed {
+		return local, false, nil
+	}
+	if _, err := run(repo, "stash", "pop"); err != nil {
+		return local, true, nil
+	}
+	return local, false, nil
+}
+
+// RecentBranches returns up to n local branches most recently checked
+// out (newest first, from the reflog), excluding the current one.
+func RecentBranches(repo string, n int) []string {
+	out, err := run(repo, "reflog", "--format=%gs", "-n", "300", "HEAD")
+	if err != nil {
+		return nil
+	}
+	current, _ := CurrentBranch(repo)
+	seen := map[string]bool{current: true}
+	var recent []string
+	for _, line := range strings.Split(out, "\n") {
+		// "checkout: moving from main to feature"
+		rest, ok := strings.CutPrefix(line, "checkout: moving from ")
+		if !ok {
+			continue
+		}
+		from, to, _ := strings.Cut(rest, " to ")
+		for _, name := range []string{to, from} { // newer first
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			if _, err := run(repo, "rev-parse", "-q", "--verify", "refs/heads/"+name); err == nil {
+				recent = append(recent, name)
+				if len(recent) == n {
+					return recent
+				}
+			}
+		}
+	}
+	return recent
 }
 
 // CreateBranchFrom creates `name` at `start` and switches to it.

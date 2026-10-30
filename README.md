@@ -34,10 +34,14 @@ directory and picks you back up when you exit.
 Inside a git repository the list gains status markers, the status bar shows the
 branch, and `Ctrl+G` opens a panel for staging, committing, stashes, blame and
 file history, with a JetBrains-style log: a coloured graph of every branch,
-merges and forks drawn in place, branch and tag labels on their commits. `b` handles branches — checkout (remote branches become
+merges and forks drawn in place, branch and tag labels on their commits, and
+`Enter` on a commit for checkout, merge, rebase, cherry-pick and friends. `b` handles branches — checkout (remote branches become
 local tracking ones), create, rename, merge, rebase, track, push, pull — and,
 on its other tabs, remotes (add, change URL, rename, remove, fetch, open in the
-browser) and tags (create, delete, push). Each branch shows how far it is ahead
+browser) and tags (create, delete, push). Like the JetBrains branches popup it
+lists recent branches first, folds `feature/…` branches into folders, compares
+any branch with the current one (`c`), and offers a smart checkout — stash,
+switch, restore — when uncommitted changes are in the way. Each branch shows how far it is ahead
 of or behind its upstream, a half-done merge or rebase can be continued or
 aborted from there, and outside a repository both panels offer `git init`.
 

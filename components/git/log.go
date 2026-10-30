@@ -2,6 +2,7 @@ package git
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -53,6 +54,23 @@ type logTab struct {
 	graph       []graphRow // one per entry of commits
 	head        string     // HEAD hash, drawn with a distinct dot
 	remotes     []string   // remote names, to tell remote refs from local ones
+
+	menu  *logMenu // Enter on a commit: branch and commit actions
+	smart *Branch  // checkout blocked by local changes, waiting for y/n on smart checkout
+}
+
+// logMenu is the action list Enter opens on a commit, like the JetBrains
+// log's context menu: what to do with the branches on that commit and
+// with the commit itself.
+type logMenu struct {
+	commit Commit
+	items  []logMenuItem
+	cursor int
+}
+
+type logMenuItem struct {
+	label string
+	run   func(m *Model) // nil for a separator
 }
 
 // visibleCount returns the number of currently visible commits in the
@@ -234,6 +252,12 @@ func (m *Model) logCreateBranch(name string) {
 // updateLog handles input for the Log tab. The boolean return tells the
 // outer overlay whether to skip overlay-level fallback handling.
 func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
+	if m.log.smart != nil {
+		return m.updateLogSmart(msg)
+	}
+	if m.log.menu != nil {
+		return m.updateLogMenu(msg)
+	}
 	if m.log.resetStep > 0 {
 		return m.updateLogReset(msg)
 	}
@@ -322,6 +346,11 @@ func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	case "d":
 		m.log.hideDetail = !m.log.hideDetail
+		return m, nil, true
+	case "enter", "l":
+		if c, ok := m.logCurrent(); ok {
+			m.log.menu = m.buildLogMenu(c)
+		}
 		return m, nil, true
 	case "g":
 		m.log.cursor = 0
@@ -449,6 +478,222 @@ func (m Model) updateLogInput(msg tea.Msg) (Model, tea.Cmd, bool) {
 	return m, cmd, true
 }
 
+// ── Actions menu ───────────────────────────────────────────────────────
+
+// buildLogMenu lists the actions for commit c: per branch on it checkout,
+// merge and rebase; then the commit-level ones.
+func (m *Model) buildLogMenu(c Commit) *logMenu {
+	menu := &logMenu{commit: c}
+	add := func(label string, run func(m *Model)) {
+		menu.items = append(menu.items, logMenuItem{label: label, run: run})
+	}
+	current := m.branch
+
+	isRemote := func(ref string) bool {
+		for _, r := range m.log.remotes {
+			if strings.HasPrefix(ref, r+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	var branches []Branch
+	for _, ref := range c.Refs {
+		switch {
+		case ref == "HEAD", strings.HasPrefix(ref, "tag: "):
+		case strings.HasPrefix(ref, "HEAD -> "):
+			branches = append(branches, Branch{Name: strings.TrimPrefix(ref, "HEAD -> "), IsCurrent: true})
+		case isRemote(ref):
+			branches = append(branches, Branch{Name: ref, IsRemote: true, Remote: remoteOf(ref, m.log.remotes)})
+		default:
+			branches = append(branches, Branch{Name: ref, IsCurrent: ref == current})
+		}
+	}
+	for _, b := range branches {
+		if b.IsCurrent {
+			continue
+		}
+		b := b
+		if b.IsRemote {
+			add("Checkout "+b.Name+" as local "+b.LocalName(), func(m *Model) { m.logCheckout(b) })
+		} else {
+			add("Checkout "+b.Name, func(m *Model) { m.logCheckout(b) })
+		}
+		add("Merge "+b.Name+" into "+current, func(m *Model) {
+			m.logRun("merged "+b.Name+" into "+current, func() error { return MergeBranch(m.root, b.Name) })
+		})
+		add("Rebase "+current+" onto "+b.Name, func(m *Model) {
+			m.logRun("rebased "+current+" onto "+b.Name, func() error { return RebaseOnto(m.root, b.Name) })
+		})
+		menu.items = append(menu.items, logMenuItem{})
+	}
+
+	add("New branch here…", func(m *Model) {
+		m.log.inputMode = logInputBranchName
+		m.log.input.SetValue("")
+		m.log.input.Placeholder = "new branch name"
+		m.log.input.Focus()
+	})
+	add("Checkout this commit (detached HEAD)", func(m *Model) {
+		m.logCheckout(Branch{Name: c.Hash})
+	})
+	add("Cherry-pick into "+current, func(m *Model) { m.logCherryPick() })
+	add("Revert", func(m *Model) { m.logRevert() })
+	add("Reset "+current+" to here…", func(m *Model) {
+		m.log.resetStep = 1
+		m.log.status = fmt.Sprintf("Reset to %s: (s)oft  (m)ixed  (h)ard  Esc=cancel", c.ShortSHA)
+		m.log.statusErr = false
+	})
+	add("Copy hash", func(m *Model) {
+		cmd := exec.Command("pbcopy")
+		cmd.Stdin = strings.NewReader(c.Hash)
+		if err := cmd.Run(); err != nil {
+			m.log.status, m.log.statusErr = "pbcopy: "+err.Error(), true
+			return
+		}
+		m.log.status, m.log.statusErr = "copied "+c.Hash, false
+	})
+	return menu
+}
+
+// logRun runs a branch operation and refreshes everything HEAD affects.
+func (m *Model) logRun(okMsg string, op func() error) {
+	if err := op(); err != nil {
+		m.log.status, m.log.statusErr = shortGitError(err), true
+	} else {
+		m.log.status, m.log.statusErr = okMsg, false
+	}
+	m.afterHeadChange()
+}
+
+// logCheckout checks b out, offering a smart checkout when local changes
+// are in the way. A Branch whose Name is a hash detaches HEAD there.
+func (m *Model) logCheckout(b Branch) {
+	var err error
+	name := b.Name
+	detach := !b.IsRemote && len(b.Name) == 40 && strings.Trim(b.Name, "0123456789abcdef") == ""
+	if detach {
+		_, err = run(m.root, "switch", "--detach", b.Name)
+		name = b.Name[:8]
+	} else {
+		name, err = SwitchTo(m.root, b)
+	}
+	switch {
+	case IsLocalChangesError(err) && !detach:
+		m.log.smart = &b
+		m.log.status, m.log.statusErr = "Local changes would be overwritten. Smart checkout — stash, switch, restore them? (y/n)", true
+		return
+	case err != nil:
+		m.log.status, m.log.statusErr = shortGitError(err), true
+	default:
+		m.log.status, m.log.statusErr = "checked out "+name, false
+	}
+	m.afterHeadChange()
+}
+
+// afterHeadChange refreshes the header, the log (keeping the selected
+// commit) and the commit tab after HEAD may have moved.
+func (m *Model) afterHeadChange() {
+	if branch, err := CurrentBranch(m.root); err == nil {
+		m.branch = branch
+	}
+	m.tracking, _ = Tracking(m.root)
+	hash := ""
+	if c, ok := m.logCurrent(); ok {
+		hash = c.Hash
+	}
+	m.reloadLog()
+	m.logSelect(hash)
+	m.reloadCommit()
+}
+
+func (m Model) updateLogMenu(msg tea.Msg) (Model, tea.Cmd, bool) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil, false
+	}
+	menu := m.log.menu
+	step := func(d int) {
+		for i := menu.cursor + d; i >= 0 && i < len(menu.items); i += d {
+			if menu.items[i].run != nil {
+				menu.cursor = i
+				return
+			}
+		}
+	}
+	switch keyMsg.String() {
+	case "up", "k":
+		step(-1)
+	case "down", "j":
+		step(1)
+	case "esc", "q", "h", "left":
+		m.log.menu = nil
+	case "enter", "l", "right":
+		item := menu.items[menu.cursor]
+		m.log.menu = nil
+		if item.run != nil {
+			item.run(&m)
+		}
+		var cmd tea.Cmd = func() tea.Msg { return BranchesChangedMsg{} }
+		if m.log.inputMode != logInputNone {
+			cmd = tea.Batch(cmd, textinput.Blink)
+		}
+		return m, cmd, true
+	}
+	return m, nil, true
+}
+
+func (m Model) updateLogSmart(msg tea.Msg) (Model, tea.Cmd, bool) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil, false
+	}
+	b := *m.log.smart
+	switch keyMsg.String() {
+	case "y", "Y":
+		m.log.smart = nil
+		name, conflicted, err := SmartSwitch(m.root, b)
+		switch {
+		case err != nil:
+			m.log.status, m.log.statusErr = shortGitError(err)+" — your changes are back where they were", true
+		case conflicted:
+			m.log.status, m.log.statusErr = "switched to "+name+"; your changes conflict with it — resolve the files (a copy stays in the stash)", true
+		default:
+			m.log.status, m.log.statusErr = "switched to "+name+" with your changes", false
+		}
+		m.afterHeadChange()
+		return m, func() tea.Msg { return BranchesChangedMsg{} }, true
+	case "n", "N", "esc":
+		m.log.smart = nil
+		m.log.status, m.log.statusErr = "cancelled", false
+	}
+	return m, nil, true
+}
+
+func (m Model) renderLogMenu(w, h int) string {
+	menu := m.log.menu
+	header := theme.ListHeader.Width(w).Render("  " + menu.commit.ShortSHA + "  " + truncatePlain(menu.commit.Subject, max(1, w-14)))
+	lines := []string{header}
+	visible := max(1, h-3) // header + blank + hint
+	start, end := windowAround(menu.cursor, len(menu.items), visible)
+	for i := start; i < end; i++ {
+		it := menu.items[i]
+		if it.run == nil {
+			lines = append(lines, theme.Dim.Render("  "+strings.Repeat("─", max(1, w-4))))
+			continue
+		}
+		style := lipgloss.NewStyle().Foreground(theme.FgColor).Width(w)
+		prefix := "   "
+		if i == menu.cursor {
+			style = style.Background(theme.BgSelected).Bold(true)
+			prefix = " ▸ "
+		}
+		lines = append(lines, style.Render(prefix+truncatePlain(it.label, max(1, w-4))))
+	}
+	lines = append(lines, "", theme.Dim.Render("  Enter run · Esc close"))
+	return padLines(lines, w, h)
+}
+
 // ── Rendering ──────────────────────────────────────────────────────────
 
 func (m Model) renderLogTab(w, h int) string {
@@ -459,9 +704,14 @@ func (m Model) renderLogTab(w, h int) string {
 	}
 
 	var top string
-	if m.log.hideDetail || w < 70 {
+	switch {
+	case m.log.menu != nil:
+		listW := max(1, min(w*62/100, w-40))
+		top = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.renderLogList(listW, topH), renderVSep(topH), m.renderLogMenu(w-listW-1, topH))
+	case m.log.hideDetail || w < 70:
 		top = m.renderLogList(w, topH)
-	} else {
+	default:
 		listW := w * 62 / 100
 		detailW := w - listW - 1
 		top = lipgloss.JoinHorizontal(lipgloss.Top,
@@ -665,16 +915,18 @@ func (m Model) renderLogItem(i, w, graphW int) string {
 		cells = append(cells, m.renderGraph(m.logIndex(i), graphW, apply), gap(1))
 	}
 
-	// Ref labels eat into the subject column, but never all of it.
+	// Ref labels eat into the subject column but leave it 8 cells; a label
+	// that does not fit is shortened rather than dropped.
 	used := 0
 	for _, l := range m.refLabels(c) {
-		lw := lipgloss.Width(l.text) + 2
-		if used+lw > subjectW*2/3 {
+		room := subjectW - 8 - used - 3 // padding and gap
+		if room < 4 {
 			break
 		}
+		text := truncatePlain(l.text, room)
 		style := lipgloss.NewStyle().Foreground(l.color).Background(theme.BgLightColor).Bold(l.bold)
-		cells = append(cells, style.Render(" "+l.text+" "), gap(1))
-		used += lw + 1
+		cells = append(cells, style.Render(" "+text+" "), gap(1))
+		used += lipgloss.Width(text) + 3
 	}
 
 	subjFg := theme.FgColor
