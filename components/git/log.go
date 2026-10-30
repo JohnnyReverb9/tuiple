@@ -2,6 +2,7 @@ package git
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -44,6 +45,32 @@ type logTab struct {
 	// reset flow: 0=none, 1=pick mode (s/m/h), 2=confirm (y/n)
 	resetStep int
 	resetMode string // "soft", "mixed", "hard"
+
+	// Graph: currentOnly limits the log to what HEAD reaches (default is
+	// every branch, like the JetBrains log); hideDetail gives the list
+	// the full width.
+	currentOnly bool
+	hideDetail  bool
+	graph       []graphRow // one per entry of commits
+	head        string     // HEAD hash, drawn with a distinct dot
+	remotes     []string   // remote names, to tell remote refs from local ones
+
+	menu  *logMenu // Enter on a commit: branch and commit actions
+	smart *Branch  // checkout blocked by local changes, waiting for y/n on smart checkout
+}
+
+// logMenu is the action list Enter opens on a commit, like the JetBrains
+// log's context menu: what to do with the branches on that commit and
+// with the commit itself.
+type logMenu struct {
+	commit Commit
+	items  []logMenuItem
+	cursor int
+}
+
+type logMenuItem struct {
+	label string
+	run   func(m *Model) // nil for a separator
 }
 
 // visibleCount returns the number of currently visible commits in the
@@ -112,13 +139,16 @@ func (m *Model) reloadLog() {
 	if m.root == "" {
 		return
 	}
-	commits, err := Log(m.root, 500)
+	commits, err := Log(m.root, 1000, !m.log.currentOnly)
 	if err != nil {
 		m.log.status = "log: " + err.Error()
 		m.log.statusErr = true
 		return
 	}
 	m.log.commits = commits
+	m.log.head, _ = run(m.root, "rev-parse", "-q", "--verify", "HEAD")
+	m.log.remotes, _ = RemoteNames(m.root)
+	m.log.graph = layoutGraph(commits, m.log.head)
 	m.log.applyLogFilter()
 	if m.log.cursor >= m.log.visibleCount() {
 		m.log.cursor = max(0, m.log.visibleCount()-1)
@@ -148,6 +178,17 @@ func (m *Model) refreshLogDetail() {
 		m.log.detail = out
 	}
 	m.log.detailLines = strings.Split(m.log.detail, "\n")
+}
+
+// logSelect moves the cursor to the commit with the given hash, if shown.
+func (m *Model) logSelect(hash string) {
+	for i := 0; i < m.log.visibleCount(); i++ {
+		if c, _ := m.log.commitAt(i); c.Hash == hash {
+			m.log.cursor = i
+			break
+		}
+	}
+	m.refreshLogDetail()
 }
 
 func (m *Model) logCurrent() (Commit, bool) {
@@ -211,6 +252,12 @@ func (m *Model) logCreateBranch(name string) {
 // updateLog handles input for the Log tab. The boolean return tells the
 // outer overlay whether to skip overlay-level fallback handling.
 func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
+	if m.log.smart != nil {
+		return m.updateLogSmart(msg)
+	}
+	if m.log.menu != nil {
+		return m.updateLogMenu(msg)
+	}
 	if m.log.resetStep > 0 {
 		return m.updateLogReset(msg)
 	}
@@ -281,6 +328,37 @@ func (m Model) updateLog(msg tea.Msg) (Model, tea.Cmd, bool) {
 		m.reloadLog()
 		m.log.status = "reloaded"
 		m.log.statusErr = false
+		return m, nil, true
+	case "a":
+		m.log.currentOnly = !m.log.currentOnly
+		hash := ""
+		if c, ok := m.logCurrent(); ok {
+			hash = c.Hash
+		}
+		m.reloadLog()
+		m.logSelect(hash)
+		if m.log.currentOnly {
+			m.log.status = "showing " + m.branch + " only (a: all branches)"
+		} else {
+			m.log.status = "showing all branches (a: current only)"
+		}
+		m.log.statusErr = false
+		return m, nil, true
+	case "d":
+		m.log.hideDetail = !m.log.hideDetail
+		return m, nil, true
+	case "enter", "l":
+		if c, ok := m.logCurrent(); ok {
+			m.log.menu = m.buildLogMenu(c)
+		}
+		return m, nil, true
+	case "g":
+		m.log.cursor = 0
+		m.refreshLogDetail()
+		return m, nil, true
+	case "G":
+		m.log.cursor = max(0, m.log.visibleCount()-1)
+		m.refreshLogDetail()
 		return m, nil, true
 	case "c":
 		m.logCherryPick()
@@ -400,6 +478,222 @@ func (m Model) updateLogInput(msg tea.Msg) (Model, tea.Cmd, bool) {
 	return m, cmd, true
 }
 
+// ── Actions menu ───────────────────────────────────────────────────────
+
+// buildLogMenu lists the actions for commit c: per branch on it checkout,
+// merge and rebase; then the commit-level ones.
+func (m *Model) buildLogMenu(c Commit) *logMenu {
+	menu := &logMenu{commit: c}
+	add := func(label string, run func(m *Model)) {
+		menu.items = append(menu.items, logMenuItem{label: label, run: run})
+	}
+	current := m.branch
+
+	isRemote := func(ref string) bool {
+		for _, r := range m.log.remotes {
+			if strings.HasPrefix(ref, r+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	var branches []Branch
+	for _, ref := range c.Refs {
+		switch {
+		case ref == "HEAD", strings.HasPrefix(ref, "tag: "):
+		case strings.HasPrefix(ref, "HEAD -> "):
+			branches = append(branches, Branch{Name: strings.TrimPrefix(ref, "HEAD -> "), IsCurrent: true})
+		case isRemote(ref):
+			branches = append(branches, Branch{Name: ref, IsRemote: true, Remote: remoteOf(ref, m.log.remotes)})
+		default:
+			branches = append(branches, Branch{Name: ref, IsCurrent: ref == current})
+		}
+	}
+	for _, b := range branches {
+		if b.IsCurrent {
+			continue
+		}
+		b := b
+		if b.IsRemote {
+			add("Checkout "+b.Name+" as local "+b.LocalName(), func(m *Model) { m.logCheckout(b) })
+		} else {
+			add("Checkout "+b.Name, func(m *Model) { m.logCheckout(b) })
+		}
+		add("Merge "+b.Name+" into "+current, func(m *Model) {
+			m.logRun("merged "+b.Name+" into "+current, func() error { return MergeBranch(m.root, b.Name) })
+		})
+		add("Rebase "+current+" onto "+b.Name, func(m *Model) {
+			m.logRun("rebased "+current+" onto "+b.Name, func() error { return RebaseOnto(m.root, b.Name) })
+		})
+		menu.items = append(menu.items, logMenuItem{})
+	}
+
+	add("New branch here…", func(m *Model) {
+		m.log.inputMode = logInputBranchName
+		m.log.input.SetValue("")
+		m.log.input.Placeholder = "new branch name"
+		m.log.input.Focus()
+	})
+	add("Checkout this commit (detached HEAD)", func(m *Model) {
+		m.logCheckout(Branch{Name: c.Hash})
+	})
+	add("Cherry-pick into "+current, func(m *Model) { m.logCherryPick() })
+	add("Revert", func(m *Model) { m.logRevert() })
+	add("Reset "+current+" to here…", func(m *Model) {
+		m.log.resetStep = 1
+		m.log.status = fmt.Sprintf("Reset to %s: (s)oft  (m)ixed  (h)ard  Esc=cancel", c.ShortSHA)
+		m.log.statusErr = false
+	})
+	add("Copy hash", func(m *Model) {
+		cmd := exec.Command("pbcopy")
+		cmd.Stdin = strings.NewReader(c.Hash)
+		if err := cmd.Run(); err != nil {
+			m.log.status, m.log.statusErr = "pbcopy: "+err.Error(), true
+			return
+		}
+		m.log.status, m.log.statusErr = "copied "+c.Hash, false
+	})
+	return menu
+}
+
+// logRun runs a branch operation and refreshes everything HEAD affects.
+func (m *Model) logRun(okMsg string, op func() error) {
+	if err := op(); err != nil {
+		m.log.status, m.log.statusErr = shortGitError(err), true
+	} else {
+		m.log.status, m.log.statusErr = okMsg, false
+	}
+	m.afterHeadChange()
+}
+
+// logCheckout checks b out, offering a smart checkout when local changes
+// are in the way. A Branch whose Name is a hash detaches HEAD there.
+func (m *Model) logCheckout(b Branch) {
+	var err error
+	name := b.Name
+	detach := !b.IsRemote && len(b.Name) == 40 && strings.Trim(b.Name, "0123456789abcdef") == ""
+	if detach {
+		_, err = run(m.root, "switch", "--detach", b.Name)
+		name = b.Name[:8]
+	} else {
+		name, err = SwitchTo(m.root, b)
+	}
+	switch {
+	case IsLocalChangesError(err) && !detach:
+		m.log.smart = &b
+		m.log.status, m.log.statusErr = "Local changes would be overwritten. Smart checkout — stash, switch, restore them? (y/n)", true
+		return
+	case err != nil:
+		m.log.status, m.log.statusErr = shortGitError(err), true
+	default:
+		m.log.status, m.log.statusErr = "checked out "+name, false
+	}
+	m.afterHeadChange()
+}
+
+// afterHeadChange refreshes the header, the log (keeping the selected
+// commit) and the commit tab after HEAD may have moved.
+func (m *Model) afterHeadChange() {
+	if branch, err := CurrentBranch(m.root); err == nil {
+		m.branch = branch
+	}
+	m.tracking, _ = Tracking(m.root)
+	hash := ""
+	if c, ok := m.logCurrent(); ok {
+		hash = c.Hash
+	}
+	m.reloadLog()
+	m.logSelect(hash)
+	m.reloadCommit()
+}
+
+func (m Model) updateLogMenu(msg tea.Msg) (Model, tea.Cmd, bool) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil, false
+	}
+	menu := m.log.menu
+	step := func(d int) {
+		for i := menu.cursor + d; i >= 0 && i < len(menu.items); i += d {
+			if menu.items[i].run != nil {
+				menu.cursor = i
+				return
+			}
+		}
+	}
+	switch keyMsg.String() {
+	case "up", "k":
+		step(-1)
+	case "down", "j":
+		step(1)
+	case "esc", "q", "h", "left":
+		m.log.menu = nil
+	case "enter", "l", "right":
+		item := menu.items[menu.cursor]
+		m.log.menu = nil
+		if item.run != nil {
+			item.run(&m)
+		}
+		var cmd tea.Cmd = func() tea.Msg { return BranchesChangedMsg{} }
+		if m.log.inputMode != logInputNone {
+			cmd = tea.Batch(cmd, textinput.Blink)
+		}
+		return m, cmd, true
+	}
+	return m, nil, true
+}
+
+func (m Model) updateLogSmart(msg tea.Msg) (Model, tea.Cmd, bool) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil, false
+	}
+	b := *m.log.smart
+	switch keyMsg.String() {
+	case "y", "Y":
+		m.log.smart = nil
+		name, conflicted, err := SmartSwitch(m.root, b)
+		switch {
+		case err != nil:
+			m.log.status, m.log.statusErr = shortGitError(err)+" — your changes are back where they were", true
+		case conflicted:
+			m.log.status, m.log.statusErr = "switched to "+name+"; your changes conflict with it — resolve the files (a copy stays in the stash)", true
+		default:
+			m.log.status, m.log.statusErr = "switched to "+name+" with your changes", false
+		}
+		m.afterHeadChange()
+		return m, func() tea.Msg { return BranchesChangedMsg{} }, true
+	case "n", "N", "esc":
+		m.log.smart = nil
+		m.log.status, m.log.statusErr = "cancelled", false
+	}
+	return m, nil, true
+}
+
+func (m Model) renderLogMenu(w, h int) string {
+	menu := m.log.menu
+	header := theme.ListHeader.Width(w).Render("  " + menu.commit.ShortSHA + "  " + truncatePlain(menu.commit.Subject, max(1, w-14)))
+	lines := []string{header}
+	visible := max(1, h-3) // header + blank + hint
+	start, end := windowAround(menu.cursor, len(menu.items), visible)
+	for i := start; i < end; i++ {
+		it := menu.items[i]
+		if it.run == nil {
+			lines = append(lines, theme.Dim.Render("  "+strings.Repeat("─", max(1, w-4))))
+			continue
+		}
+		style := lipgloss.NewStyle().Foreground(theme.FgColor).Width(w)
+		prefix := "   "
+		if i == menu.cursor {
+			style = style.Background(theme.BgSelected).Bold(true)
+			prefix = " ▸ "
+		}
+		lines = append(lines, style.Render(prefix+truncatePlain(it.label, max(1, w-4))))
+	}
+	lines = append(lines, "", theme.Dim.Render("  Enter run · Esc close"))
+	return padLines(lines, w, h)
+}
+
 // ── Rendering ──────────────────────────────────────────────────────────
 
 func (m Model) renderLogTab(w, h int) string {
@@ -409,31 +703,31 @@ func (m Model) renderLogTab(w, h int) string {
 		return m.renderLogList(w, max(1, h))
 	}
 
-	listW := clamp(w*45/100, 30, 70)
-	if listW > w-10 {
-		listW = w - 10
+	var top string
+	switch {
+	case m.log.menu != nil:
+		listW := max(1, min(w*62/100, w-40))
+		top = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.renderLogList(listW, topH), renderVSep(topH), m.renderLogMenu(w-listW-1, topH))
+	case m.log.hideDetail || w < 70:
+		top = m.renderLogList(w, topH)
+	default:
+		listW := w * 62 / 100
+		detailW := w - listW - 1
+		top = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.renderLogList(listW, topH), renderVSep(topH), m.renderLogDetail(detailW, topH))
 	}
-	detailW := w - listW - 1
-	if detailW < 1 {
-		detailW = 1
-	}
-
-	listView := m.renderLogList(listW, topH)
-	detailView := m.renderLogDetail(detailW, topH)
-	sep := renderVSep(topH)
-
-	top := lipgloss.JoinHorizontal(lipgloss.Top, listView, sep, detailView)
-	status := m.renderLogStatus(w)
-
-	return lipgloss.JoinVertical(lipgloss.Left, top, status)
+	return lipgloss.JoinVertical(lipgloss.Left, top, m.renderLogStatus(w))
 }
 
 func (m Model) renderLogList(w, h int) string {
-	// Header shows the match count when a filter is active so the user
-	// always sees how many commits the current query catches.
-	headerText := "  Commits"
+	scope := "all branches"
+	if m.log.currentOnly {
+		scope = m.branch
+	}
+	headerText := "  Log · " + scope
 	if m.log.filter != "" {
-		headerText = fmt.Sprintf("  Commits  %d / %d match", m.log.visibleCount(), len(m.log.commits))
+		headerText = fmt.Sprintf("  Log · %s  %d / %d match", scope, m.log.visibleCount(), len(m.log.commits))
 	}
 	header := theme.ListHeader.Width(w).Render(headerText)
 
@@ -447,14 +741,144 @@ func (m Model) renderLogList(w, h int) string {
 	default:
 		visible := max(1, h-1)
 		start, end := windowAround(m.log.cursor, total, visible)
+		graphW := m.graphWidth(start, end, w)
 		for i := start; i < end; i++ {
-			lines = append(lines, m.renderLogItem(i, w))
+			lines = append(lines, m.renderLogItem(i, w, graphW))
 		}
 	}
 	return padLines(lines, w, h)
 }
 
-func (m Model) renderLogItem(i, w int) string {
+// laneColors is the palette the graph cycles through, one colour per lane.
+var laneColors = []lipgloss.AdaptiveColor{
+	theme.AccentBlue,
+	theme.AccentGreen,
+	theme.AccentOrange,
+	theme.AccentMagenta,
+	theme.AccentCyan,
+	theme.AccentYellow,
+	theme.AccentRed,
+}
+
+func laneStyle(color int) lipgloss.Style {
+	if color < 0 {
+		return lipgloss.NewStyle()
+	}
+	return lipgloss.NewStyle().Foreground(laneColors[color%len(laneColors)])
+}
+
+// graphWidth is the column width the graph needs for the visible rows,
+// capped at a quarter of the list. 0 while a filter hides the graph.
+func (m Model) graphWidth(start, end, w int) int {
+	if m.log.filter != "" || len(m.log.graph) != len(m.log.commits) {
+		return 0
+	}
+	need := 0
+	for i := start; i < end; i++ {
+		need = max(need, 2*len(m.log.graph[i].cells))
+	}
+	return min(need, max(6, w/4))
+}
+
+// renderGraph draws row i of the graph in exactly width cells.
+func (m Model) renderGraph(i, width int, bg func(lipgloss.Style) lipgloss.Style) string {
+	row := m.log.graph[i]
+	var b strings.Builder
+	used := 0
+	for _, cell := range row.cells {
+		if used+2 > width {
+			break
+		}
+		glyph := laneStyle(cell.glyphColor)
+		if cell.glyph == glyphCommit || cell.glyph == glyphHead {
+			glyph = glyph.Bold(true)
+		}
+		b.WriteString(bg(glyph).Render(string(cell.glyph)))
+		b.WriteString(bg(laneStyle(cell.spacerColor)).Render(string(cell.spacer)))
+		used += 2
+	}
+	if used < width {
+		ell := " "
+		if 2*len(row.cells) > width {
+			ell = "…"
+		}
+		b.WriteString(bg(theme.Dim).Render(ell + strings.Repeat(" ", width-used-1)))
+	}
+	return b.String()
+}
+
+// refLabel is one decoration shown before a commit subject.
+type refLabel struct {
+	text  string
+	color lipgloss.AdaptiveColor
+	bold  bool
+}
+
+// refLabels turns git decorations into labels. A local branch and its
+// remote counterpart on the same commit become one "origin & main"
+// label, the way the JetBrains log shows them.
+func (m Model) refLabels(c Commit) []refLabel {
+	isRemote := func(ref string) bool {
+		for _, r := range m.log.remotes {
+			if strings.HasPrefix(ref, r+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	var locals, remotes, tags []string
+	current, detached := "", false
+	for _, ref := range c.Refs {
+		switch {
+		case ref == "HEAD":
+			detached = true
+		case strings.HasPrefix(ref, "HEAD -> "):
+			current = strings.TrimPrefix(ref, "HEAD -> ")
+			locals = append(locals, current)
+		case strings.HasPrefix(ref, "tag: "):
+			tags = append(tags, strings.TrimPrefix(ref, "tag: "))
+		case isRemote(ref):
+			remotes = append(remotes, ref)
+		default:
+			locals = append(locals, ref)
+		}
+	}
+
+	var out []refLabel
+	if detached {
+		out = append(out, refLabel{"HEAD", theme.AccentYellow, true})
+	}
+	paired := map[string]bool{}
+	for _, l := range locals {
+		var with []string
+		for _, r := range remotes {
+			if strings.HasSuffix(r, "/"+l) && !paired[r] {
+				with = append(with, strings.TrimSuffix(r, "/"+l))
+				paired[r] = true
+			}
+		}
+		text := l
+		if len(with) > 0 {
+			text = strings.Join(with, " & ") + " & " + l
+		}
+		if l == current {
+			out = append(out, refLabel{"▸ " + text, theme.AccentYellow, true})
+		} else {
+			out = append(out, refLabel{text, theme.AccentGreen, false})
+		}
+	}
+	for _, r := range remotes {
+		if !paired[r] {
+			out = append(out, refLabel{r, theme.AccentCyan, false})
+		}
+	}
+	for _, t := range tags {
+		out = append(out, refLabel{"◆ " + t, theme.AccentMagenta, false})
+	}
+	return out
+}
+
+func (m Model) renderLogItem(i, w, graphW int) string {
 	c, ok := m.log.commitAt(i)
 	if !ok {
 		return strings.Repeat(" ", w)
@@ -467,45 +891,73 @@ func (m Model) renderLogItem(i, w int) string {
 		}
 		return s
 	}
+	gap := func(n int) string { return apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", n)) }
 
-	// Author moves to the right-hand Details pane where the full
-	// `git show` output already prints it; the list shows SHA + subject
-	// + relative date so every row is one visual line.
+	// Columns, JetBrains style: graph · refs + subject · author · date.
+	// Author goes first and then the date when the list gets narrow.
 	const (
-		shaW       = 8
-		dateW      = 14
-		spaceLead  = 1
-		sepSHASubj = 1
-		sepSubjDate = 2
-		spaceTrail = 1
+		authorW = 14
+		dateW   = 16
 	)
-	subjectW := w - (spaceLead + shaW + sepSHASubj + sepSubjDate + dateW + spaceTrail)
-	includeDate := subjectW >= 5
-	if !includeDate {
-		subjectW = w - (spaceLead + shaW + sepSHASubj + spaceTrail)
+	subjectW := w - 1 - graphW - 1 - 1 // lead, graph, gap, trail
+	showAuthor := subjectW-authorW-2 >= 24
+	if showAuthor {
+		subjectW -= authorW + 2
 	}
-	if subjectW < 1 {
-		subjectW = 1
+	showDate := subjectW-dateW-2 >= 20
+	if showDate {
+		subjectW -= dateW + 2
+	}
+	subjectW = max(1, subjectW)
+
+	cells := []string{gap(1)}
+	if graphW > 0 {
+		cells = append(cells, m.renderGraph(m.logIndex(i), graphW, apply), gap(1))
 	}
 
-	cells := []string{
-		apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", spaceLead)),
-		apply(lipgloss.NewStyle().Foreground(theme.AccentYellow)).
-			Width(shaW).Render(truncatePlain(c.ShortSHA, shaW)),
-		apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", sepSHASubj)),
-		apply(lipgloss.NewStyle().Foreground(theme.FgColor)).
-			Width(subjectW).Render(truncatePlain(c.Subject, subjectW)),
+	// Ref labels eat into the subject column but leave it 8 cells; a label
+	// that does not fit is shortened rather than dropped.
+	used := 0
+	for _, l := range m.refLabels(c) {
+		room := subjectW - 8 - used - 3 // padding and gap
+		if room < 4 {
+			break
+		}
+		text := truncatePlain(l.text, room)
+		style := lipgloss.NewStyle().Foreground(l.color).Background(theme.BgLightColor).Bold(l.bold)
+		cells = append(cells, style.Render(" "+text+" "), gap(1))
+		used += lipgloss.Width(text) + 3
 	}
-	if includeDate {
-		cells = append(cells,
-			apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", sepSubjDate)),
-			apply(lipgloss.NewStyle().Foreground(theme.FgDimColor)).
-				Width(dateW).Render(truncatePlain(c.RelDate, dateW)),
-		)
-	}
-	cells = append(cells, apply(lipgloss.NewStyle()).Render(strings.Repeat(" ", spaceTrail)))
 
+	subjFg := theme.FgColor
+	if c.IsMerge() {
+		subjFg = theme.FgDimColor // merges recede, as in the JetBrains log
+	}
+	restW := max(1, subjectW-used)
+	cells = append(cells, apply(lipgloss.NewStyle().Foreground(subjFg)).
+		Width(restW).Render(truncatePlain(c.Subject, restW)))
+	if showAuthor {
+		cells = append(cells, gap(2), apply(lipgloss.NewStyle().Foreground(theme.FgDimColor)).
+			Width(authorW).Render(truncatePlain(c.Author, authorW)))
+	}
+	if showDate {
+		date := c.Date
+		if date == "" {
+			date = c.RelDate
+		}
+		cells = append(cells, gap(2), apply(lipgloss.NewStyle().Foreground(theme.FgDimColor)).
+			Width(dateW).Render(truncatePlain(date, dateW)))
+	}
+	cells = append(cells, gap(1))
 	return strings.Join(cells, "")
+}
+
+// logIndex maps a visible row to its index in commits (and graph).
+func (m Model) logIndex(i int) int {
+	if m.log.filter != "" && i < len(m.log.filtered) {
+		return m.log.filtered[i]
+	}
+	return i
 }
 
 func (m Model) renderLogDetail(w, h int) string {

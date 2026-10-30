@@ -44,7 +44,15 @@ type Commit struct {
 	Author   string
 	RelDate  string
 	Subject  string
+
+	// Filled by Log only (the graph needs them).
+	Parents []string
+	Refs    []string // decorations: "HEAD -> main", "origin/main", "tag: v1"
+	Date    string   // "13.05.2026 13:54"
 }
+
+// IsMerge reports whether the commit has more than one parent.
+func (c Commit) IsMerge() bool { return len(c.Parents) > 1 }
 
 // Stash is a single entry from `git stash list`.
 type Stash struct {
@@ -58,7 +66,12 @@ type Branch struct {
 	Name      string // short name; for remote branches includes the remote (e.g. "origin/main")
 	IsCurrent bool   // true for the branch currently checked out (HEAD)
 	IsRemote  bool   // true for refs under refs/remotes
+	Remote    string // remote name for remote branches ("origin"); empty for local ones
 	Upstream  string // upstream tracking branch (short); empty if none
+	Ahead     int    // commits ahead of Upstream
+	Behind    int    // commits behind Upstream
+	Gone      bool   // Upstream is configured but no longer exists on the remote
+	Unborn    bool   // current branch of a repository with no commits yet
 	Subject   string // subject of the commit pointed at by the ref
 }
 
@@ -69,10 +82,34 @@ func (b Branch) LocalName() string {
 	if !b.IsRemote {
 		return b.Name
 	}
+	if b.Remote != "" {
+		return strings.TrimPrefix(b.Name, b.Remote+"/")
+	}
 	if i := strings.IndexByte(b.Name, '/'); i >= 0 && i < len(b.Name)-1 {
 		return b.Name[i+1:]
 	}
 	return b.Name
+}
+
+// Head describes what HEAD points at and whether an operation that
+// needs finishing (merge, rebase, cherry-pick, revert) is in progress.
+type Head struct {
+	Branch   string // current branch; empty when detached
+	Detached bool
+	Unborn   bool   // the branch has no commits yet (fresh `git init`)
+	ShortSHA string // commit HEAD points at; empty when unborn
+	Op       string // "merge", "rebase", "cherry-pick", "revert" or ""
+}
+
+// Label is a one-word description of HEAD for headers.
+func (h Head) Label() string {
+	switch {
+	case h.Detached:
+		return "detached at " + h.ShortSHA
+	case h.Unborn:
+		return h.Branch + " (no commits yet)"
+	}
+	return h.Branch
 }
 
 // TrackingInfo holds ahead/behind counts vs. the upstream branch.
@@ -90,12 +127,69 @@ func FindRoot(path string) (string, error) {
 }
 
 // CurrentBranch returns the current branch name, or "HEAD" if detached.
+// A branch with no commits yet (right after `git init`) is still named.
 func CurrentBranch(repo string) (string, error) {
 	out, err := run(repo, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", err
+	if err == nil {
+		return out, nil
 	}
-	return out, nil
+	if name, serr := run(repo, "symbolic-ref", "--short", "-q", "HEAD"); serr == nil && name != "" {
+		return name, nil
+	}
+	return "", err
+}
+
+// HeadState reports the branch, detached / unborn state and any
+// in-progress merge, rebase, cherry-pick or revert.
+func HeadState(repo string) Head {
+	var h Head
+	if name, err := run(repo, "symbolic-ref", "--short", "-q", "HEAD"); err == nil && name != "" {
+		h.Branch = name
+	} else {
+		h.Detached = true
+	}
+	if sha, err := run(repo, "rev-parse", "--short", "-q", "--verify", "HEAD"); err == nil && sha != "" {
+		h.ShortSHA = sha
+	} else {
+		h.Unborn = true
+		h.Detached = false
+	}
+	markers := []struct{ path, op string }{
+		{"rebase-merge", "rebase"},
+		{"rebase-apply", "rebase"},
+		{"MERGE_HEAD", "merge"},
+		{"CHERRY_PICK_HEAD", "cherry-pick"},
+		{"REVERT_HEAD", "revert"},
+	}
+	for _, mk := range markers {
+		p, err := run(repo, "rev-parse", "--path-format=absolute", "--git-path", mk.path)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			h.Op = mk.op
+			break
+		}
+	}
+	return h
+}
+
+// AbortOp aborts the in-progress operation reported by HeadState.
+func AbortOp(repo, op string) (string, error) {
+	if op == "" {
+		return "", fmt.Errorf("nothing to abort")
+	}
+	return runWithOutput(repo, op, "--abort")
+}
+
+// ContinueOp continues the in-progress operation after conflicts were
+// resolved and staged. runWithOutput suppresses the editor, so git keeps
+// its default message instead of hanging on an invisible editor.
+func ContinueOp(repo, op string) (string, error) {
+	if op == "" {
+		return "", fmt.Errorf("nothing to continue")
+	}
+	return runWithOutput(repo, op, "--continue")
 }
 
 // Tracking returns upstream / ahead / behind for the current branch.
@@ -185,39 +279,95 @@ func DiffUntracked(repo, path string) (string, error) {
 	return out, err
 }
 
-// Log returns the most recent `limit` commits on the current branch.
-func Log(repo string, limit int) ([]Commit, error) {
+// Log returns the most recent `limit` commits, children before parents,
+// with parents and ref decorations for the graph. With all set it covers
+// every branch, remote branch and tag; otherwise only what HEAD reaches.
+func Log(repo string, limit int, all bool) ([]Commit, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	format := "%H%x00%h%x00%an%x00%ar%x00%s"
-	out, err := run(repo, "log",
-		"--no-color",
-		"-n", strconv.Itoa(limit),
-		"--format="+format,
-	)
+	args := append(logArgs(), "--date-order", "-n", strconv.Itoa(limit))
+	if all {
+		args = append(args, "--branches", "--remotes", "--tags", "HEAD")
+	}
+	out, err := run(repo, args...)
 	if err != nil {
+		// An unborn branch has no log yet; that is not an error.
+		if h := HeadState(repo); h.Unborn {
+			return nil, nil
+		}
 		return nil, err
 	}
-	if out == "" {
-		return nil, nil
-	}
+	return parseLog(out), nil
+}
 
+// logArgs is the `git log` invocation parseLog understands.
+func logArgs() []string {
+	return []string{"log",
+		"--no-color",
+		"--date=format:%d.%m.%Y %H:%M",
+		"--decorate=short",
+		"--format=%H%x00%h%x00%P%x00%an%x00%ar%x00%ad%x00%D%x00%s",
+	}
+}
+
+func parseLog(out string) []Commit {
+	if out == "" {
+		return nil
+	}
 	var commits []Commit
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\x00", 5)
-		if len(parts) < 5 {
+		parts := strings.SplitN(line, "\x00", 8)
+		if len(parts) < 8 {
 			continue
 		}
-		commits = append(commits, Commit{
+		c := Commit{
 			Hash:     parts[0],
 			ShortSHA: parts[1],
-			Author:   parts[2],
-			RelDate:  parts[3],
-			Subject:  parts[4],
-		})
+			Parents:  strings.Fields(parts[2]),
+			Author:   parts[3],
+			RelDate:  parts[4],
+			Date:     parts[5],
+			Subject:  parts[7],
+		}
+		for _, ref := range strings.Split(parts[6], ", ") {
+			if ref != "" && !strings.HasSuffix(ref, "/HEAD") {
+				c.Refs = append(c.Refs, ref)
+			}
+		}
+		commits = append(commits, c)
 	}
-	return commits, nil
+	return commits
+}
+
+// Comparison is what two branches have that the other lacks.
+type Comparison struct {
+	Base, Other string
+	OnlyOther   []Commit // reachable from Other, not from Base
+	OnlyBase    []Commit // reachable from Base, not from Other
+	Stat        string   // `git diff --shortstat Base...Other`
+}
+
+// Compare lists the commits that differ between base and other (the
+// JetBrains "Compare with Current"), newest first, at most limit each.
+func Compare(repo, base, other string, limit int) (Comparison, error) {
+	cmp := Comparison{Base: base, Other: other}
+	for _, side := range []struct {
+		rng  string
+		dest *[]Commit
+	}{
+		{base + ".." + other, &cmp.OnlyOther},
+		{other + ".." + base, &cmp.OnlyBase},
+	} {
+		out, err := run(repo, append(logArgs(), "--topo-order", "-n", strconv.Itoa(limit), side.rng, "--")...)
+		if err != nil {
+			return cmp, err
+		}
+		*side.dest = parseLog(out)
+	}
+	cmp.Stat, _ = run(repo, "diff", "--shortstat", base+"..."+other, "--")
+	cmp.Stat = strings.TrimSpace(cmp.Stat)
+	return cmp, nil
 }
 
 // CommitDetail returns `git show` output for the given commit, including
@@ -230,51 +380,201 @@ func CommitDetail(repo, hash string) (string, error) {
 // ── Branch operations ─────────────────────────────────────────────────
 
 // ListBranches returns all local and remote branches. Remote symbolic
-// refs (origin/HEAD etc.) are filtered out.
+// refs (origin/HEAD etc.) are filtered out. In a repository without
+// commits the unborn current branch is listed too, so the popup is
+// never empty right after `git init`.
 func ListBranches(repo string) ([]Branch, error) {
 	out, err := run(repo, "for-each-ref",
-		"--format=%(refname)|%(HEAD)|%(upstream:short)|%(contents:subject)",
+		"--format=%(refname)%00%(HEAD)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(contents:subject)",
 		"refs/heads", "refs/remotes")
 	if err != nil {
 		return nil, err
 	}
-	if out == "" {
-		return nil, nil
-	}
+	remotes, _ := RemoteNames(repo)
 
 	var branches []Branch
+	hasCurrent := false
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) < 4 {
+		parts := strings.SplitN(line, "\x00", 5)
+		if len(parts) < 5 {
 			continue
 		}
 		fullName := parts[0]
-		isRemote := strings.HasPrefix(fullName, "refs/remotes/")
-		var name string
-		switch {
-		case isRemote:
-			name = strings.TrimPrefix(fullName, "refs/remotes/")
-		default:
-			name = strings.TrimPrefix(fullName, "refs/heads/")
-		}
-		if strings.HasSuffix(name, "/HEAD") {
-			continue
-		}
-		branches = append(branches, Branch{
-			Name:      name,
+		b := Branch{
 			IsCurrent: parts[1] == "*",
-			IsRemote:  isRemote,
+			IsRemote:  strings.HasPrefix(fullName, "refs/remotes/"),
 			Upstream:  parts[2],
-			Subject:   parts[3],
-		})
+			Subject:   parts[4],
+		}
+		if b.IsRemote {
+			b.Name = strings.TrimPrefix(fullName, "refs/remotes/")
+			b.Remote = remoteOf(b.Name, remotes)
+			if strings.HasSuffix(b.Name, "/HEAD") || b.Name == b.Remote {
+				continue
+			}
+		} else {
+			b.Name = strings.TrimPrefix(fullName, "refs/heads/")
+		}
+		b.Ahead, b.Behind, b.Gone = parseTrack(parts[3])
+		hasCurrent = hasCurrent || b.IsCurrent
+		branches = append(branches, b)
+	}
+
+	if !hasCurrent {
+		if h := HeadState(repo); h.Unborn && h.Branch != "" {
+			branches = append([]Branch{{Name: h.Branch, IsCurrent: true, Unborn: true}}, branches...)
+		}
 	}
 	return branches, nil
 }
 
-// Switch checks out `name`. Uses `git switch`, which auto-creates a local
-// tracking branch when `name` matches a single upstream.
+// remoteOf picks the remote a remote-tracking ref belongs to. Remote
+// names may contain slashes, so the longest matching prefix wins.
+func remoteOf(name string, remotes []string) string {
+	best := ""
+	for _, r := range remotes {
+		if strings.HasPrefix(name, r+"/") && len(r) > len(best) {
+			best = r
+		}
+	}
+	if best == "" {
+		if i := strings.IndexByte(name, '/'); i > 0 {
+			best = name[:i]
+		}
+	}
+	return best
+}
+
+// parseTrack reads %(upstream:track,nobracket): "ahead 1, behind 2", "gone" or "".
+func parseTrack(s string) (ahead, behind int, gone bool) {
+	for _, part := range strings.Split(s, ",") {
+		f := strings.Fields(part)
+		switch {
+		case len(f) == 1 && f[0] == "gone":
+			gone = true
+		case len(f) == 2 && f[0] == "ahead":
+			ahead, _ = strconv.Atoi(f[1])
+		case len(f) == 2 && f[0] == "behind":
+			behind, _ = strconv.Atoi(f[1])
+		}
+	}
+	return ahead, behind, gone
+}
+
+// Switch checks out the local branch `name`.
 func Switch(repo, name string) error {
 	_, err := run(repo, "switch", name)
+	return err
+}
+
+// SwitchTo checks out b. For a remote branch it switches to the local
+// branch of the same name when one exists, and otherwise creates it
+// tracking b — explicitly, so it also works when several remotes carry
+// a branch with that name (plain `git switch` refuses then).
+func SwitchTo(repo string, b Branch) (string, error) {
+	if !b.IsRemote {
+		return b.Name, Switch(repo, b.Name)
+	}
+	local := b.LocalName()
+	if _, err := run(repo, "rev-parse", "-q", "--verify", "refs/heads/"+local); err == nil {
+		return local, Switch(repo, local)
+	}
+	_, err := run(repo, "switch", "-c", local, "--track", b.Name)
+	return local, err
+}
+
+// IsLocalChangesError reports whether err is git refusing to check out
+// because uncommitted changes would be overwritten.
+func IsLocalChangesError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "would be overwritten by") ||
+		strings.Contains(msg, "your local changes")
+}
+
+// SmartSwitch is the JetBrains "smart checkout": stash the uncommitted
+// changes (untracked files too), check out b, and bring the changes back.
+// If they conflict with the new branch, the switch stands, the conflicts
+// are left in the working tree and the stash is kept as a backup —
+// conflicted reports that. If the checkout itself fails, the changes are
+// restored where they were.
+func SmartSwitch(repo string, b Branch) (local string, conflicted bool, err error) {
+	before, _ := run(repo, "rev-parse", "-q", "--verify", "refs/stash")
+	if _, err := run(repo, "stash", "push", "--include-untracked", "-m", "tuiple: smart checkout to "+b.Name); err != nil {
+		return "", false, err
+	}
+	after, _ := run(repo, "rev-parse", "-q", "--verify", "refs/stash")
+	stashed := after != "" && after != before
+
+	local, err = SwitchTo(repo, b)
+	if err != nil {
+		if stashed {
+			if _, perr := run(repo, "stash", "pop", "--index"); perr != nil {
+				_, _ = run(repo, "stash", "pop")
+			}
+		}
+		return local, false, err
+	}
+	if !stashed {
+		return local, false, nil
+	}
+	if _, err := run(repo, "stash", "pop"); err != nil {
+		return local, true, nil
+	}
+	return local, false, nil
+}
+
+// RecentBranches returns up to n local branches most recently checked
+// out (newest first, from the reflog), excluding the current one.
+func RecentBranches(repo string, n int) []string {
+	out, err := run(repo, "reflog", "--format=%gs", "-n", "300", "HEAD")
+	if err != nil {
+		return nil
+	}
+	current, _ := CurrentBranch(repo)
+	seen := map[string]bool{current: true}
+	var recent []string
+	for _, line := range strings.Split(out, "\n") {
+		// "checkout: moving from main to feature"
+		rest, ok := strings.CutPrefix(line, "checkout: moving from ")
+		if !ok {
+			continue
+		}
+		from, to, _ := strings.Cut(rest, " to ")
+		for _, name := range []string{to, from} { // newer first
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			if _, err := run(repo, "rev-parse", "-q", "--verify", "refs/heads/"+name); err == nil {
+				recent = append(recent, name)
+				if len(recent) == n {
+					return recent
+				}
+			}
+		}
+	}
+	return recent
+}
+
+// CreateBranchFrom creates `name` at `start` and switches to it.
+func CreateBranchFrom(repo, name, start string) error {
+	_, err := run(repo, "switch", "-c", name, start)
+	return err
+}
+
+// SetUpstream makes `upstream` (e.g. "origin/main") the tracking branch
+// of the local branch `branch`.
+func SetUpstream(repo, branch, upstream string) error {
+	_, err := run(repo, "branch", "--set-upstream-to="+upstream, branch)
+	return err
+}
+
+// UnsetUpstream removes the tracking branch of `branch`.
+func UnsetUpstream(repo, branch string) error {
+	_, err := run(repo, "branch", "--unset-upstream", branch)
 	return err
 }
 
@@ -296,17 +596,12 @@ func DeleteBranch(repo, name string, force bool) error {
 	return err
 }
 
-// DeleteRemoteBranch deletes a branch on the remote.  `fullName` is the
-// short form as returned by ListBranches for remote refs, i.e.
-// "<remote>/<branch>" (e.g. "origin/feature/foo").  Splitting it back into
-// its remote and branch parts is done here so callers don't have to.
-func DeleteRemoteBranch(repo, fullName string) (string, error) {
-	i := strings.IndexByte(fullName, '/')
-	if i <= 0 || i >= len(fullName)-1 {
-		return "", fmt.Errorf("not a remote branch: %q", fullName)
+// DeleteRemoteBranch deletes the remote branch b on its remote.
+func DeleteRemoteBranch(repo string, b Branch) (string, error) {
+	if !b.IsRemote || b.Remote == "" {
+		return "", fmt.Errorf("not a remote branch: %q", b.Name)
 	}
-	remote, branch := fullName[:i], fullName[i+1:]
-	return runWithOutput(repo, "push", remote, "--delete", branch)
+	return runWithOutput(repo, "push", b.Remote, "--delete", b.LocalName())
 }
 
 // RenameBranch renames a local branch. If `from` is empty the current
@@ -403,9 +698,6 @@ func AddToGitIgnore(repo, relPath string) (added bool, err error) {
 	return true, os.WriteFile(p, []byte(buf.String()), 0644)
 }
 
-// unused sentinel to satisfy the fmt import used elsewhere in this file.
-var _ = fmt.Sprintf
-
 // LogFile returns the most recent limit commits that touch path.
 func LogFile(repo, path string, limit int) ([]Commit, error) {
 	if limit <= 0 {
@@ -455,36 +747,53 @@ func ResetTo(repo, hash, mode string) error {
 // branch that was just created locally), `git push` errors out telling
 // the user to rerun with --set-upstream.  Rather than dump that whole
 // hint into the status bar we detect the case and transparently rerun
-// the push with --set-upstream origin <branch>.
+// the push with --set-upstream to the branch's push remote (see
+// PushRemote), so it also works when the remote is not called "origin".
 func Push(repo string) (string, error) {
+	h := HeadState(repo)
+	if h.Detached {
+		return "", fmt.Errorf("HEAD is detached — check out a branch to push")
+	}
+	if h.Unborn {
+		return "", fmt.Errorf("nothing to push — make the first commit")
+	}
+	if names, _ := RemoteNames(repo); len(names) == 0 {
+		return "", ErrNoRemote
+	}
 	out, err := runWithOutput(repo, "push")
 	if err == nil {
 		return out, nil
 	}
-	// Inspect both the combined output and the wrapped error text — git
-	// puts the "no upstream branch" hint on stderr, and runWithOutput
-	// rolls that into the error message too.
-	haystack := out + "\n" + err.Error()
-	if !strings.Contains(haystack, "has no upstream branch") &&
-		!strings.Contains(haystack, "set-upstream") {
+	if !strings.Contains(out, "has no upstream branch") &&
+		!strings.Contains(out, "set-upstream") {
 		return out, err
 	}
-	branch, berr := CurrentBranch(repo)
-	if berr != nil || branch == "" || branch == "HEAD" {
-		return out, err
+	remote, rerr := PushRemote(repo, h.Branch)
+	if rerr != nil {
+		return out, rerr
 	}
-	return runWithOutput(repo, "push", "--set-upstream", "origin", branch)
+	return runWithOutput(repo, "push", "--set-upstream", remote, h.Branch)
 }
 
-// Pull pulls (fetch + merge) from the upstream remote and returns combined
-// output for status reporting.
+// Pull pulls from the upstream remote (merging or rebasing, as the
+// user's pull.rebase says) and returns combined output for status
+// reporting.
 func Pull(repo string) (string, error) {
 	return runWithOutput(repo, "pull")
+}
+
+// PullRebase pulls and rebases local commits on top of the upstream —
+// the way out when a plain pull reports divergent branches.
+func PullRebase(repo string) (string, error) {
+	return runWithOutput(repo, "pull", "--rebase")
 }
 
 // Fetch fetches from all remotes and returns combined output for status
 // reporting.
 func Fetch(repo string) (string, error) {
+	if names, _ := RemoteNames(repo); len(names) == 0 {
+		return "", ErrNoRemote
+	}
 	return runWithOutput(repo, "fetch", "--all", "--prune")
 }
 

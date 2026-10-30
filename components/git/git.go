@@ -142,6 +142,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "esc", "ctrl+g":
 			m.Stop()
 			return m, nil
+		case "i":
+			if errors.Is(m.loadErr, ErrNotARepo) {
+				if _, err := Init(m.repoPath); err != nil {
+					m.loadErr = err
+					return m, nil
+				}
+				cmd := m.Start(m.repoPath)
+				m.commit.status = "initialized an empty repository — stage files and commit"
+				return m, tea.Batch(cmd, func() tea.Msg { return BranchesChangedMsg{} })
+			}
 		case "tab", "right":
 			m.tab = (m.tab + 1) % Tab(len(tabTitles))
 			return m, nil
@@ -244,7 +254,8 @@ func (m Model) renderBody(w, h int) string {
 	case errors.Is(m.loadErr, ErrNotARepo):
 		content = "\n" +
 			theme.ErrorMsg.Render("  Not inside a git repository.") + "\n" +
-			theme.Dim.Render("  Open the panel from a directory that is tracked by git.") + "\n"
+			theme.Dim.Render("  Press i to run git init in "+m.repoPath+",") + "\n" +
+			theme.Dim.Render("  or open the panel from a directory that is tracked by git.") + "\n"
 	case m.loadErr != nil:
 		content = "\n" + theme.ErrorMsg.Render("  "+m.loadErr.Error()) + "\n"
 	default:

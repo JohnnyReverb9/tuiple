@@ -4,12 +4,36 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
 
 // ErrNotARepo is returned when the working directory is not inside a git repo.
 var ErrNotARepo = errors.New("not a git repository")
+
+// Error is a failed git invocation. Output is what git said about it:
+// stderr, or stdout when stderr is empty (merge and rebase report
+// conflicts on stdout).
+type Error struct {
+	Args   []string
+	Output string
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("git %s: %s", strings.Join(e.Args, " "), e.Output)
+}
+
+func newError(args []string, output string, runErr error) error {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		output = runErr.Error()
+	}
+	if strings.Contains(output, "not a git repository") {
+		return ErrNotARepo
+	}
+	return &Error{Args: args, Output: output}
+}
 
 // run executes `git <args...>` with the given working directory and returns
 // trimmed stdout. On non-zero exit the returned error carries stderr.
@@ -43,20 +67,16 @@ func runWithStdin(repo, stdin string, args ...string) (string, error) {
 func runWithOutput(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repo
+	// Never let git take over the terminal from the TUI: no credential
+	// prompts on /dev/tty (fail instead) and no editor for --continue.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
 	cmd.Stderr = &combined
 	runErr := cmd.Run()
 	out := strings.TrimSpace(combined.String())
 	if runErr != nil {
-		msg := out
-		if msg == "" {
-			msg = runErr.Error()
-		}
-		if strings.Contains(msg, "not a git repository") {
-			return out, ErrNotARepo
-		}
-		return out, fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
+		return out, newError(args, out, runErr)
 	}
 	return out, nil
 }
@@ -73,14 +93,15 @@ func runRawStdin(repo, stdin string, args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
+		msg := stderr.String()
+		if strings.TrimSpace(msg) == "" {
+			msg = stdout.String()
 		}
-		if strings.Contains(msg, "not a git repository") {
-			return nil, ErrNotARepo
+		gitErr := newError(args, msg, err)
+		if gitErr == ErrNotARepo {
+			return nil, gitErr
 		}
-		return stdout.Bytes(), fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
+		return stdout.Bytes(), gitErr
 	}
 	return stdout.Bytes(), nil
 }

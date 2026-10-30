@@ -1,0 +1,49 @@
+# iTerm2 keystroke	escape sequence sent (after ESC)	zsh widget for the same keys in the shell	what it is
+# Modifier masks: Shift 0x20000, Option 0x80000, Cmd 0x100000; arrows also carry 0x200000.
+# Every Cmd key is sent as CSI-u with the "super" bit, which Neovim reads as <D-…>.
+0x73-0x100000	[115;9u	redisplay	Cmd+S  save
+0x7a-0x100000	[122;9u	undo	Cmd+Z  undo
+0x7a-0x120000	[122;10u	redo	Cmd+Shift+Z  redo
+0x5a-0x120000	[122;10u	redo	Cmd+Shift+Z  redo
+0x61-0x100000	[97;9u	redisplay	Cmd+A  select all
+0x41-0x120000	[97;10u	redisplay	Cmd+Shift+A  find action
+0x61-0x120000	[97;10u	redisplay	Cmd+Shift+A  find action
+0x65-0x100000	[101;9u	redisplay	Cmd+E  recent files
+0x6f-0x100000	[111;9u	redisplay	Cmd+O  go to class
+0x4f-0x120000	[111;10u	redisplay	Cmd+Shift+O  go to file
+0x6f-0x120000	[111;10u	redisplay	Cmd+Shift+O  go to file
+0x6f-0x180000	[111;11u	redisplay	Cmd+Option+O  go to symbol
+0x66-0x100000	[102;9u	redisplay	Cmd+F  find in file
+0x46-0x120000	[102;10u	redisplay	Cmd+Shift+F  find in path
+0x66-0x120000	[102;10u	redisplay	Cmd+Shift+F  find in path
+0x72-0x100000	[114;9u	redisplay	Cmd+R  replace in file
+0x52-0x120000	[114;10u	redisplay	Cmd+Shift+R  replace in path
+0x72-0x120000	[114;10u	redisplay	Cmd+Shift+R  replace in path
+0x62-0x100000	[98;9u	redisplay	Cmd+B  go to declaration
+0x42-0x120000	[98;10u	redisplay	Cmd+Shift+B  go to type declaration
+0x62-0x120000	[98;10u	redisplay	Cmd+Shift+B  go to type declaration
+0x62-0x180000	[98;11u	redisplay	Cmd+Option+B  go to implementation
+0x6c-0x180000	[108;11u	redisplay	Cmd+Option+L  reformat code
+0x64-0x100000	[100;9u	redisplay	Cmd+D  duplicate line
+0x6a-0x100000	[106;9u	redisplay	Cmd+J  live templates (snippets)
+0x70-0x100000	[112;9u	redisplay	Cmd+P  parameter info
+0x2f-0x100000	[47;9u	redisplay	Cmd+/  comment
+0x5b-0x100000	[91;9u	redisplay	Cmd+[  back
+0x5d-0x100000	[93;9u	redisplay	Cmd+]  forward
+0x7f-0x100000	[127;9u	backward-kill-line	Cmd+Backspace  delete line
+0xd-0x80000	[13;3u	accept-line	Option+Enter  intention actions
+0xf700-0x280000	[1;3A	up-line-or-history	Option+Up  extend selection
+0xf701-0x280000	[1;3B	down-line-or-history	Option+Down  shrink selection
+0xf700-0x2a0000	[1;4A	up-line-or-history	Option+Shift+Up  move line up
+0xf701-0x2a0000	[1;4B	down-line-or-history	Option+Shift+Down  move line down
+0xf700-0x320000	[1;10A	up-line-or-history	Cmd+Shift+Up  move line up
+0xf701-0x320000	[1;10B	down-line-or-history	Cmd+Shift+Down  move line down
+0xf702-0x380000	[1;11D	backward-word	Cmd+Option+Left  back
+0xf703-0x380000	[1;11C	forward-word	Cmd+Option+Right  forward
+0xf705-0x20000	[1;2Q	redisplay	Shift+F2  previous problem
+0xf709-0x20000	[17;2~	redisplay	Shift+F6  rename
+0xf70a-0x80000	[18;3~	redisplay	Option+F7  find usages
+0xf70b-0x20000	[19;2~	redisplay	Shift+F8  step out
+0xf70b-0x100000	[19;9~	redisplay	Cmd+F8  toggle breakpoint
+0xf70f-0x100000	[24;9~	redisplay	Cmd+F12  file structure
+0xf70f-0x80000	[24;3~	redisplay	Option+F12  terminal
