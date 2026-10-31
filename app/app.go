@@ -1790,12 +1790,13 @@ func (m Model) renderHelp() string {
 			{"Enter / l", "Checkout (smart if changes block)"},
 			{"Enter / Space", "Fold / unfold a feature/ folder"},
 			{"c", "Compare with current branch"},
-			{"n / N", "New branch from HEAD / from selected"},
+			{"n / N", "New branch from HEAD / selected"},
 			{"r / d / D", "Rename / Delete safe / Force-delete"},
 			{"m / R", "Merge into current / Rebase onto"},
 			{"t", "Track remote branch / untrack local"},
 			{"P / p / U", "Push / Pull / Pull with rebase"},
-			{"F  ·  C / A", "Fetch all  ·  Continue / Abort merge, rebase"},
+			{"F", "Fetch all remotes"},
+			{"C / A", "Continue / Abort merge or rebase"},
 			{"/  ·  Ctrl+R", "Filter  ·  Reload"},
 			{"i", "git init (outside a repository)"},
 		}},
@@ -1870,7 +1871,12 @@ func (m Model) renderHelp() string {
 		rightLines = append(rightLines, "")
 	}
 
-	const leftColW = 58
+	// The left column is as wide as its longest line, so a description
+	// never wraps under the key column.
+	leftColW := 58
+	for _, l := range leftLines {
+		leftColW = max(leftColW, lipgloss.Width(l)+3)
+	}
 	leftCol := lipgloss.NewStyle().Width(leftColW).Render(strings.Join(leftLines, "\n"))
 	rightCol := strings.Join(rightLines, "\n")
 	cols := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
