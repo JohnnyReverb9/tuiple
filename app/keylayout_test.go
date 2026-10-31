@@ -2,6 +2,7 @@ package app
 
 import (
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -113,10 +114,11 @@ func TestNonRuneKeysUnchanged(t *testing.T) {
 // Settings rows are built from live config, so every tab must render
 // without a nil accessor sneaking in.
 func TestSettingsRowsRender(t *testing.T) {
+	t.Setenv("NVIM_IDE_SETTINGS", filepath.Join(t.TempDir(), "settings.json"))
 	p := NewSettingsPopup()
 	p.SetSize(100, 30)
 	p.Start()
-	for tab := tabDelete; tab <= tabSystem; tab++ {
+	for tab := tabDelete; tab <= tabNeovim; tab++ {
 		p.setTab(tab)
 		for _, r := range p.rows() {
 			if r.kind == settingInfo {

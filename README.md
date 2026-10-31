@@ -170,6 +170,11 @@ immediately to `~/.config/tuiple/config.json`; delete that file and the defaults
 come back. Bookmarks live next to it in `bookmarks.json`, the action log in
 `audit.jsonl`. Set `TUIPLE_CONFIG` to run against a different settings file.
 
+When the editor is `nvim` with the [nvim-ide](nvim-ide/README.md) config from
+this repository, a seventh section, **Neovim**, sets up the editor itself —
+colour scheme, line numbers, tabs, completion, which languages get a server —
+in `~/.config/nvim-ide/settings.json`, read by Neovim on its next start.
+
 Deleting
 
 | | Values | |

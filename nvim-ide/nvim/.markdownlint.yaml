@@ -1,0 +1,3 @@
+# Markdownlint rules for files edited in Neovim.
+# MD013 (line length) is off: prose is soft-wrapped, not cut at 80 columns.
+MD013: false

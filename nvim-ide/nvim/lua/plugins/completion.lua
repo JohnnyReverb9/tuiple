@@ -3,7 +3,10 @@
 --   * Tab accepts it; with no menu open Tab jumps through snippet fields
 --   * Enter accepts only after you picked an item with the arrows,
 --     so a plain Enter at the end of a word is still just a new line
+--     (settings.json enter_accepts: "after_arrows" | "always" | "never")
 --   * Ctrl+Space / Cmd+J open the list (Cmd+J: snippets only, "live templates")
+
+local ide = require("config.ide").settings
 
 -- Set once the user moves through the list; cleared whenever the menu closes.
 local navigated = false
@@ -38,7 +41,8 @@ return {
         ["<S-Tab>"] = { "snippet_backward", "fallback" },
         ["<CR>"] = {
           function(cmp)
-            if navigated and cmp.get_selected_item() then
+            local accept = ide.enter_accepts == "always" or (ide.enter_accepts == "after_arrows" and navigated)
+            if accept and cmp.get_selected_item() then
               return cmp.accept()
             end
           end,
@@ -82,15 +86,15 @@ return {
           },
         },
         documentation = {
-          auto_show = true,
+          auto_show = ide.auto_docs,
           auto_show_delay_ms = 150,
           window = { border = "rounded" },
         },
-        ghost_text = { enabled = true },
+        ghost_text = { enabled = ide.ghost_text },
         accept = { auto_brackets = { enabled = true } },
       })
 
-      opts.signature = { enabled = true, window = { border = "rounded" } }
+      opts.signature = { enabled = ide.signature_help, window = { border = "rounded" } }
 
       -- Words from open buffers are a fallback, not the main act.
       opts.sources.providers = vim.tbl_deep_extend("force", opts.sources.providers or {}, {

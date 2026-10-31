@@ -2,7 +2,7 @@ return {
   {
     "LazyVim/LazyVim",
     opts = {
-      colorscheme = "tokyonight-day",
+      colorscheme = require("config.ide").settings.colorscheme,
     },
   },
 

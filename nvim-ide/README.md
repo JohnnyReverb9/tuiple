@@ -35,6 +35,28 @@ language servers won't install.
 > In that profile Cmd+D / Cmd+F / Cmd+R / Cmd+O / Cmd+[ ] no longer do their iTerm thing
 > (split, find and so on) — they go to Neovim. Cmd+C/V/T/W/N and Cmd+digits are untouched.
 
+## Settings
+
+Look, editing, completion and languages are read from
+`~/.config/nvim-ide/settings.json` when Neovim starts (restart it or run
+`:restart` after a change). You rarely need to touch the file: in
+[tuiple](../README.md), press `,` and open the **Neovim** tab, which appears
+when tuiple's editor is `nvim` with this config. Every key is optional;
+`nvim/lua/config/ide.lua` lists them with their defaults.
+
+```json
+{
+  "colorscheme": "catppuccin-mocha",
+  "line_numbers": "relative",
+  "margin": 100,
+  "enter_accepts": "always",
+  "languages": { "php": false }
+}
+```
+
+Switching a language off drops its LazyVim extra (server, formatter,
+linter, debugger); switching it on installs them on the next start.
+
 ## Completion
 
 | Key | |
@@ -97,6 +119,8 @@ Everything else is stock LazyVim: `Space` opens the which-key menu
 
 - `nvim/lua/config/keymaps.lua` — the PhpStorm key layer
 - `nvim/lua/plugins/completion.lua` — completion behaviour (blink.cmp)
-- `nvim/lua/plugins/languages.lua` — HTML/CSS/Emmet/bash; other languages are extras in `nvim/lazyvim.json`
-- `nvim/lua/config/options.lua` — options (4-wide tabs, block cursor, margin at 120…)
+- `nvim/lua/plugins/languages.lua` — HTML/CSS/Emmet/bash; other languages are LazyVim extras chosen in the settings
+- `nvim/lua/config/ide.lua` — the settings file, its keys and defaults
+- `nvim/lua/config/options.lua` — options, most of them from the settings
+- `nvim/.markdownlint.yaml` — Markdown lint rules (line-length warnings off)
 - `iterm/keys.tsv` — which keys iTerm2 sends to Neovim; rerun `install.sh` after editing it

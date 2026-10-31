@@ -43,9 +43,18 @@ const (
 	tabLayout
 	tabOpening
 	tabSystem
+	tabNeovim // only while the editor is the nvim-ide config
 )
 
 var settingsTabTitles = []string{"Delete", "Files", "Preview", "Layout", "Opening", "System"}
+
+// tabTitles is settingsTabTitles plus Neovim when that tab applies.
+func (h SettingsPopup) tabTitles() []string {
+	if config.NvimConnected(config.Get().Editor()) {
+		return append(append([]string(nil), settingsTabTitles...), "Neovim")
+	}
+	return settingsTabTitles
+}
 
 type settingKind int
 
@@ -79,6 +88,11 @@ type settingRow struct {
 	reset func(c *config.Config)
 	// muted dims the row when it has no effect in the current mode.
 	muted bool
+
+	// apply / resetTo back rows stored outside config.json (the Neovim
+	// tab): they take the place of step / reset and save themselves.
+	apply   func(dir int) error
+	resetTo func() error
 }
 
 func (r settingRow) selectable() bool { return r.kind != settingInfo }
@@ -99,6 +113,9 @@ type SettingsPopup struct {
 	// confirmation that the file was written.
 	status   string
 	statusOK bool
+
+	// nv is the Neovim tab's settings as last read from disk.
+	nv config.NvimSettings
 
 	width  int
 	height int
@@ -130,10 +147,19 @@ func (h *SettingsPopup) Start() {
 	h.status = ""
 	h.input.SetValue("")
 	h.input.Blur()
+	h.reloadNvim()
 	h.placeCursorAtFirstSelectable()
 }
 
 func (h *SettingsPopup) Stop() { h.active = false }
+
+func (h *SettingsPopup) reloadNvim() {
+	nv, err := config.LoadNvim()
+	h.nv = nv
+	if err != nil {
+		h.setStatus("could not read "+config.NvimSettingsPath()+": "+err.Error(), false)
+	}
+}
 
 func (h *SettingsPopup) setTab(t settingsTab) {
 	if h.tab == t {
@@ -457,6 +483,9 @@ func (h SettingsPopup) rows() []settingRow {
 		}
 		return rows
 
+	case tabNeovim:
+		return h.nvimRows()
+
 	default: // tabSystem
 		return []settingRow{
 			{
@@ -580,13 +609,17 @@ func (h SettingsPopup) Update(msg tea.Msg) (SettingsPopup, tea.Cmd) {
 		h.Stop()
 		return h, nil
 	case "tab":
-		h.setTab(settingsTab((int(h.tab) + 1) % len(settingsTabTitles)))
+		n := len(h.tabTitles())
+		h.setTab(settingsTab((int(h.tab) + 1) % n))
 		return h, nil
 	case "shift+tab":
-		h.setTab(settingsTab((int(h.tab) + len(settingsTabTitles) - 1) % len(settingsTabTitles)))
+		n := len(h.tabTitles())
+		h.setTab(settingsTab((int(h.tab) + n - 1) % n))
 		return h, nil
-	case "1", "2", "3", "4", "5", "6":
-		h.setTab(settingsTab(int(keyMsg.String()[0] - '1')))
+	case "1", "2", "3", "4", "5", "6", "7":
+		if i := int(keyMsg.String()[0] - '1'); i < len(h.tabTitles()) {
+			h.setTab(settingsTab(i))
+		}
 		return h, nil
 	case "up", "k":
 		h.moveCursor(-1)
@@ -620,6 +653,10 @@ func (h SettingsPopup) Update(msg tea.Msg) (SettingsPopup, tea.Cmd) {
 		return h, nil
 	case "r":
 		row := h.currentRow()
+		if row.resetTo != nil {
+			h.saveNvim(row.resetTo())
+			return h, nil
+		}
 		if row.reset != nil {
 			h.applyChange(row.reset)
 			return h, changedCmd()
@@ -667,6 +704,10 @@ func (h *SettingsPopup) beginEdit() {
 
 func (h *SettingsPopup) stepCurrent(dir int) tea.Cmd {
 	row := h.currentRow()
+	if row.apply != nil {
+		h.saveNvim(row.apply(dir))
+		return nil
+	}
 	if row.step == nil {
 		return nil
 	}
@@ -683,6 +724,17 @@ func (h *SettingsPopup) applyChange(fn func(*config.Config)) {
 		return
 	}
 	h.setStatus("saved to "+config.Path(), true)
+}
+
+// saveNvim reports the outcome of a Neovim-tab change and re-reads the
+// file so the screen shows what Neovim will see.
+func (h *SettingsPopup) saveNvim(err error) {
+	if err != nil {
+		h.setStatus("could not save: "+err.Error(), false)
+		return
+	}
+	h.reloadNvim()
+	h.setStatus("saved — restart nvim (or :restart) to apply", true)
 }
 
 func (h *SettingsPopup) setStatus(s string, ok bool) {
@@ -737,14 +789,14 @@ func (h SettingsPopup) View() string {
 
 	rows := h.rows()
 	c := config.Get()
-	rendered := make([]string, 0, len(rows))
-	for i, r := range rows {
-		rendered = append(rendered, h.renderRow(r, c, i == h.cursor, w))
+	// Long tabs (Neovim) scroll to keep the cursor in view.
+	start := 0
+	if len(rows) > listH {
+		start = min(max(0, h.cursor-listH/2), len(rows)-listH)
 	}
-	if len(rendered) > listH {
-		rendered = rendered[:listH]
+	for i := start; i < len(rows) && i < start+listH; i++ {
+		lines = append(lines, h.renderRow(rows[i], c, i == h.cursor, w))
 	}
-	lines = append(lines, rendered...)
 
 	blank := padLine("", w)
 	for len(lines) < contentH-footerLines {
@@ -774,7 +826,7 @@ func (h SettingsPopup) renderTitleBar() string {
 	dimDot := theme.Dim.Render("·")
 
 	var parts []string
-	for i, t := range settingsTabTitles {
+	for i, t := range h.tabTitles() {
 		label := " " + t + " "
 		if settingsTab(i) == h.tab {
 			parts = append(parts, activeStyle.Render(label))
