@@ -93,6 +93,9 @@ type OpenExternalMsg struct {
 	Reveal bool
 }
 
+// InfoRequestMsg asks the app to show everything known about an entry.
+type InfoRequestMsg struct{ Path string }
+
 // OpenInTabMsg asks the app to open a directory in a new tab.
 type OpenInTabMsg struct{ Path string }
 
@@ -171,6 +174,9 @@ type Model struct {
 	back     []location
 	forward  []location
 	selected map[string]struct{}
+	// expanded holds the folders opened in place, by path — the tree
+	// view. Their contents are listed under them, indented.
+	expanded map[string]bool
 	err      error
 
 	gitFileStat map[string]string   // abs path -> 2-char porcelain code
@@ -211,6 +217,7 @@ func New(path string) Model {
 		focused:     true,
 		selected:    make(map[string]struct{}),
 		dirSizes:    make(map[string]int64),
+		expanded:    make(map[string]bool),
 	}
 	m.loadNow()
 	return m
@@ -230,6 +237,7 @@ func (m Model) Spawn(path string) Model {
 		focused:     true,
 		selected:    make(map[string]struct{}),
 		dirSizes:    m.dirSizes,
+		expanded:    make(map[string]bool),
 		gitFileStat: nil,
 	}
 	next.loadNow()
@@ -304,14 +312,18 @@ func (m Model) bulkRenameNames() []string {
 	names := make([]string, 0, len(m.entries))
 	if len(m.selected) > 0 {
 		for _, e := range m.entries {
-			if _, marked := m.selected[e.Path]; marked {
+			if _, marked := m.selected[e.Path]; marked && e.Depth == 0 {
 				names = append(names, e.Name)
 			}
 		}
 		return names
 	}
 	for _, e := range m.entries {
-		names = append(names, e.Name)
+		// Entries of expanded folders live in other directories; a bulk
+		// rename works on one directory at a time.
+		if e.Depth == 0 {
+			names = append(names, e.Name)
+		}
 	}
 	return names
 }
@@ -424,7 +436,7 @@ func (m Model) jump(path, selectName string, cursor, offset int) (Model, tea.Cmd
 // is nothing on screen yet to keep responsive, and the first directory
 // has to be there before the first frame is drawn.
 func (m *Model) loadNow() {
-	entries, err := filesystem.ReadDir(m.currentPath, m.showHidden)
+	entries, err := readTree(m.currentPath, m.showHidden, m.sortMode, m.expanded, 0)
 	if err != nil {
 		m.err = err
 		m.allEntries = nil
@@ -432,7 +444,6 @@ func (m *Model) loadNow() {
 		return
 	}
 	m.err = nil
-	filesystem.SortEntries(entries, m.sortMode)
 	m.allEntries = entries
 	m.applyFilter()
 }
@@ -457,13 +468,105 @@ func (m *Model) startLoad(selectName string, cursor, offset int) tea.Cmd {
 	showHidden := m.showHidden
 	sortMode := m.sortMode
 
+	// A copy: the read runs on another goroutine while the map may change.
+	expanded := make(map[string]bool, len(m.expanded))
+	for p := range m.expanded {
+		expanded[p] = true
+	}
+
 	return func() tea.Msg {
-		entries, err := filesystem.ReadDir(path, showHidden)
-		if err == nil {
-			filesystem.SortEntries(entries, sortMode)
-		}
+		entries, err := readTree(path, showHidden, sortMode, expanded, 0)
 		return EntriesLoadedMsg{ListID: id, Path: path, Token: token, Entries: entries, Err: err}
 	}
+}
+
+// maxTreeDepth stops a chain of expanded folders (or a symlink loop)
+// from recursing without end.
+const maxTreeDepth = 16
+
+// readTree lists a directory and, under each expanded folder, that
+// folder's own listing one level deeper. Every level is sorted on its
+// own, so a folder's contents stay together beneath it.
+func readTree(path string, showHidden bool, mode filesystem.SortMode,
+	expanded map[string]bool, depth int) ([]filesystem.FileEntry, error) {
+	entries, err := filesystem.ReadDir(path, showHidden)
+	if err != nil {
+		return nil, err
+	}
+	filesystem.SortEntries(entries, mode)
+	if len(expanded) == 0 && depth == 0 {
+		return entries, nil
+	}
+	out := make([]filesystem.FileEntry, 0, len(entries))
+	for _, e := range entries {
+		e.Depth = depth
+		out = append(out, e)
+		if e.IsDir && expanded[e.Path] && depth < maxTreeDepth {
+			// An unreadable folder just shows as empty.
+			if kids, err := readTree(e.Path, showHidden, mode, expanded, depth+1); err == nil {
+				out = append(out, kids...)
+			}
+		}
+	}
+	return out, nil
+}
+
+// expand opens the folder under the cursor in place; on a folder that is
+// already open it steps into its first child.
+func (m Model) expand() (Model, tea.Cmd) {
+	e := m.SelectedEntry()
+	if e == nil || !e.IsDir {
+		return m, nil
+	}
+	if m.expanded[e.Path] {
+		if m.cursor+1 < len(m.entries) && m.entries[m.cursor+1].Depth > e.Depth {
+			m.cursor++
+			m.fixScroll()
+		}
+		return m, nil
+	}
+	if m.expanded == nil {
+		m.expanded = make(map[string]bool)
+	}
+	m.expanded[e.Path] = true
+	return m, m.startLoad("", m.cursor, m.offset)
+}
+
+// collapse closes the folder under the cursor, or — from inside one —
+// the folder the cursor is in, landing on it.
+func (m Model) collapse() (Model, tea.Cmd) {
+	e := m.SelectedEntry()
+	if e == nil {
+		return m, nil
+	}
+	if !(e.IsDir && m.expanded[e.Path]) {
+		if e.Depth == 0 {
+			return m, nil
+		}
+		for i := m.cursor - 1; i >= 0; i-- {
+			if m.entries[i].Depth < e.Depth {
+				m.cursor = i
+				break
+			}
+		}
+		m.fixScroll()
+		e = m.SelectedEntry()
+	}
+	delete(m.expanded, e.Path)
+	return m, m.startLoad("", m.cursor, m.offset)
+}
+
+// ToggleExpandAt opens or closes the folder on a row — a click on its
+// arrow.
+func (m Model) ToggleExpandAt(idx int) (Model, tea.Cmd) {
+	if idx < 0 || idx >= len(m.entries) || !m.entries[idx].IsDir {
+		return m, nil
+	}
+	m.cursor = idx
+	if m.expanded[m.entries[idx].Path] {
+		return m.collapse()
+	}
+	return m.expand()
 }
 
 // applyFilter derives the visible list from the directory contents.
@@ -485,6 +588,13 @@ func (m *Model) applyFilter() {
 // placeCursor restores the cursor after the list contents changed.
 func (m *Model) placeCursor(selectName string, cursor, offset int) {
 	if selectName != "" {
+		// Names repeat across the levels of a tree; if the row the
+		// cursor was on still has this name, that is the one meant.
+		if cursor >= 0 && cursor < len(m.entries) && m.entries[cursor].Name == selectName {
+			m.cursor, m.offset = cursor, offset
+			m.fixScroll()
+			return
+		}
 		for i, e := range m.entries {
 			if e.Name == selectName {
 				m.cursor = i
@@ -832,6 +942,15 @@ func (m Model) Do(action keys.Action) (Model, tea.Cmd) {
 				m.fixScroll()
 			}
 		}
+	case keys.Expand:
+		return m.expand()
+	case keys.Collapse:
+		return m.collapse()
+	case keys.FileInfo:
+		if e := m.SelectedEntry(); e != nil {
+			p := e.Path
+			return m, func() tea.Msg { return InfoRequestMsg{Path: p} }
+		}
 	case keys.SelectAll:
 		for _, e := range m.entries {
 			m.selected[e.Path] = struct{}{}
@@ -919,7 +1038,12 @@ func (m Model) Do(action keys.Action) (Model, tea.Cmd) {
 		}
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
-			names = append(names, e.Name)
+			if e.Depth == 0 {
+				names = append(names, e.Name)
+			}
+		}
+		if len(names) == 0 {
+			return m, nil
 		}
 		dir := m.currentPath
 		return m, func() tea.Msg { return ArchiveRequestMsg{Dir: dir, Names: names} }
@@ -1186,7 +1310,11 @@ func (m Model) renderEntry(idx int, showIcons bool) string {
 	name := sanitizeName(entry.Name)
 	if entry.IsDir {
 		name += "/"
+		if m.expanded[entry.Path] {
+			icon.Symbol = "▾"
+		}
 	}
+	name = strings.Repeat("  ", entry.Depth) + name
 
 	nameW := m.nameWidth()
 

@@ -74,6 +74,12 @@ end, { desc = "Replace in path" })
 map(niv, "<D-b>", function()
   Snacks.picker.lsp_definitions()
 end, { desc = "Go to declaration" })
+-- Click to go to the declaration, like Cmd+click in the IDE. iTerm2 keeps
+-- Cmd+click for itself (it opens links), so the terminal spelling is
+-- Ctrl+click; <D-LeftMouse> is for terminals that do pass Cmd through.
+for _, lhs in ipairs({ "<C-LeftMouse>", "<D-LeftMouse>" }) do
+  map(ni, lhs, "<LeftMouse><Cmd>lua Snacks.picker.lsp_definitions()<CR>", { desc = "Go to declaration" })
+end
 map(niv, "<M-D-b>", function()
   Snacks.picker.lsp_implementations()
 end, { desc = "Go to implementation" })

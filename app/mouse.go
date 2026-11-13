@@ -160,6 +160,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// A click on a folder's arrow opens it in place, as in a tree.
+		if entry.IsDir && msg.X-listX0 <= 1 {
+			var cmd tea.Cmd
+			m.filelist, cmd = m.filelist.ToggleExpandAt(idx)
+			return m.afterListInput(prevCursor, prevPath, []tea.Cmd{cmd})
+		}
 		// Alt- or Ctrl-click marks, the terminal's stand-in for Cmd-click.
 		if msg.Alt || msg.Ctrl {
 			m.filelist = m.filelist.ToggleMarkAt(idx)

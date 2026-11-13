@@ -92,7 +92,7 @@ linter, debugger); switching it on installs them on the next start.
 | `Cmd+[` `Cmd+]`, `Cmd+Option+←/→` | back / forward |
 | `Cmd+F` / `Cmd+Shift+F` | find in file / in path |
 | `Cmd+R` / `Cmd+Shift+R` | replace in file / in path |
-| `Cmd+B` | go to declaration |
+| `Cmd+B`, `Ctrl+click` | go to declaration (iTerm2 keeps `Cmd+click` for opening links) |
 | `Cmd+Option+B` | go to implementation |
 | `Cmd+Shift+B` | go to type declaration |
 | `Option+F7` | find usages |

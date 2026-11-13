@@ -173,6 +173,8 @@ type Model struct {
 	closedTabs []string // directories of closed tabs, for reopening
 
 	picker picker.Model // command palette / recent places
+	// infoBox is the rendered "Get info" popup; empty when closed.
+	infoBox string
 
 	textInput  textinput.Model
 	dialogMode DialogMode
@@ -466,6 +468,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// ── Info box: any key closes it ────────────────────────────────
+	if m.infoBox != "" {
+		switch msg.(type) {
+		case tea.KeyMsg:
+			m.infoBox = ""
+			return m, nil
+		case tea.MouseMsg:
+			return m, nil
+		}
+	}
+
 	// ── Intercept the picker (palette / recent) ────────────────────
 	if m.picker.IsActive() {
 		var cmd tea.Cmd
@@ -644,6 +657,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	// ── Tabs and small file operations asked for by the list ───────
+	case filelist.InfoRequestMsg:
+		m.infoBox = fileInfoBox(msg.Path, m.gitFileStat[msg.Path], m.width-4)
+		return m, nil
 	case filelist.OpenInTabMsg:
 		return m.openTab(msg.Path, "")
 	case filelist.DuplicateRequestMsg:
@@ -902,24 +918,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Search completed ──────────────────────────────────────────
 	case search.SearchCompletedMsg:
-		dir := filepath.Dir(msg.SelectedPath)
 		TouchRecent(msg.SelectedPath, false)
-		m.currentPath = dir
-		var listCmd tea.Cmd
-		m.filelist, listCmd = m.filelist.NavigateTo(dir)
-		m.filelist = m.filelist.SelectByName(filepath.Base(msg.SelectedPath))
-		cmds = append(cmds, listCmd)
-		if entry := m.filelist.SelectedEntry(); entry != nil {
-			cmds = append(cmds, m.preview.LoadFile(*entry))
+		next, cmd := m.goTo(filepath.Dir(msg.SelectedPath), filepath.Base(msg.SelectedPath))
+		if msg.Reveal {
+			return next, cmd
 		}
+		// Enter opens what was found: a text match at its line, a file
+		// through the same route as Enter on its row.
+		open := func() tea.Msg { return filelist.OpenFileRequestMsg{Path: msg.SelectedPath} }
 		if msg.Mode == search.ModeContentSearch && msg.LineNum > 0 {
-			lineArg := fmt.Sprintf("+%d", msg.LineNum)
-			editorCmd := exec.Command(config.Get().Editor(), lineArg, msg.SelectedPath)
-			cmds = append(cmds, tea.ExecProcess(editorCmd, func(err error) tea.Msg {
-				return filelist.RefreshListMsg{}
-			}))
+			editor := exec.Command(config.Get().Editor(), fmt.Sprintf("+%d", msg.LineNum), msg.SelectedPath)
+			open = tea.ExecProcess(editor, func(error) tea.Msg { return filelist.RefreshListMsg{} })
 		}
-		return m, tea.Batch(cmds...)
+		return next, tea.Sequence(cmd, open)
 
 	// ── Sidebar navigation ─────────────────────────────────────────
 	case sidebar.NavigateMsg:
@@ -1037,7 +1048,7 @@ func (m Model) View() string {
 	var box string
 	atTop := false
 	if m.searchOverlay.IsActive() {
-		m.searchOverlay.SetSize(m.width/2, contentH)
+		m.searchOverlay.SetSize(m.searchWidth(), contentH)
 		box = m.searchOverlay.View()
 	}
 	if m.gitOverlay.IsActive() {
@@ -1070,6 +1081,9 @@ func (m Model) View() string {
 		// A quick-open box belongs near the top, where the eye already
 		// is, not dead centre.
 		atTop = true
+	}
+	if m.infoBox != "" {
+		box = m.infoBox
 	}
 	if box != "" {
 		x, y := centred(box, m.width, contentH)
@@ -1127,6 +1141,11 @@ func (m *Model) updateSizes() {
 	m.sidebar.SetSize(sidebarW, contentH)
 	m.filelist.SetSize(filelistW, contentH)
 	m.preview.SetSize(previewW, contentH)
+	// The quick-open popups scroll and lay out their preview by their
+	// own height, so they must know it while handling keys — not only
+	// in View, which works on a copy.
+	m.searchOverlay.SetSize(m.searchWidth(), contentH)
+	m.picker.SetSize(m.width, contentH)
 	m.updateFocus()
 }
 
@@ -1159,6 +1178,12 @@ func (m Model) panelWidths() (int, int, int) {
 	return sidebarW, filelistW, previewW
 }
 
+// searchWidth is how wide the search popup is: most of the window, since
+// it has to fit a path, a line of code and a preview.
+func (m Model) searchWidth() int {
+	return min(m.width-4, max(m.width*3/4, 70))
+}
+
 func (m Model) contentHeight() int {
 	// [tab strip] + breadcrumb + rule + content + rule + status bar
 	return max(1, m.height-m.chromeTop()-2)
@@ -1168,6 +1193,7 @@ func (m Model) contentHeight() int {
 // the keyboard: a popup, a prompt in the status bar, the list filter.
 func (m Model) modalActive() bool {
 	return m.dialogMode != DialogNone ||
+		m.infoBox != "" ||
 		m.awaitingSort ||
 		m.filelist.IsFiltering() ||
 		m.picker.IsActive() ||
@@ -1441,7 +1467,9 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var err error
 				switch m.dialogMode {
 				case DialogRename:
-					dst := filepath.Join(m.currentPath, val)
+					// Next to the original, which in the tree view need
+					// not be the directory the list is rooted at.
+					dst := filepath.Join(filepath.Dir(m.opEntries[0].Path), val)
 					err = filesystem.Move(m.opEntries[0].Path, dst)
 					if err == nil {
 						PushHistory(HistoryEvent{

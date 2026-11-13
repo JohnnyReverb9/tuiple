@@ -626,3 +626,79 @@ func TestFrameRowsNeverExceedANarrowWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestRunCommandsAreReadFromTheProject(t *testing.T) {
+	root := project(t)
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("Makefile", "BIN := x\n.PHONY: build\nbuild: deps\n\tgo build\ntest:\n\tgo test\nVAR:=1\n")
+	write("package.json", `{"scripts":{"dev":"vite","build":"vite build"}}`)
+	write("yarn.lock", "")
+	write("go.mod", "module x\n")
+
+	var got []string
+	for _, it := range runCommands(root) {
+		got = append(got, it.ID)
+	}
+	want := []string{"make build", "make test", "yarn run build", "yarn run dev",
+		"go build ./...", "go test ./...", "go vet ./...", "go run ."}
+	if !equal(got, want) {
+		t.Errorf("commands = %v\nwant       %v", got, want)
+	}
+}
+
+func TestInfoBoxOpensAndAnyKeyClosesIt(t *testing.T) {
+	root := project(t)
+	m := newTestModel(t, root)
+	m = press(t, m, "j") // other/ → sub/ ... any entry will do
+	m = press(t, m, "I")
+	if m.infoBox == "" || !strings.Contains(m.infoBox, "Permissions") {
+		t.Fatalf("no info box: %q", m.infoBox)
+	}
+	lines := strings.Split(m.View(), "\n")
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w != m.width {
+			t.Fatalf("row %d is %d cells with the box open, want %d", i, w, m.width)
+		}
+	}
+	m = press(t, m, "t") // closes the box; must not also open a tab
+	if m.infoBox != "" || len(m.tabs) != 1 {
+		t.Errorf("after a key: box open=%v, %d tabs", m.infoBox != "", len(m.tabs))
+	}
+}
+
+// Renaming a file inside an expanded folder keeps it in that folder.
+func TestRenameInsideAnExpandedFolder(t *testing.T) {
+	root := project(t)
+	m := newTestModel(t, root)
+	m = press(t, m, "j") // sub/
+	m = press(t, m, ">")
+	m = press(t, m, ">") // inner.txt
+	if e := m.filelist.SelectedEntry(); e == nil || e.Name != "inner.txt" {
+		t.Fatalf("cursor is on %v, want inner.txt", e)
+	}
+	m = press(t, m, "r")
+	m.textInput.SetValue("renamed.txt")
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = settle(t, next.(Model), cmd)
+	if _, err := os.Stat(filepath.Join(root, "sub", "renamed.txt")); err != nil {
+		t.Errorf("the file did not stay in its folder: %v (status %q)", err, m.statusMsg)
+	}
+}
+
+// The popups lay themselves out by their own size while handling keys;
+// a size known only to View would leave them scrolling a three-row list.
+func TestPopupsKnowTheirSizeOutsideView(t *testing.T) {
+	root := project(t)
+	m := newTestModel(t, root)
+	if got := m.searchOverlay.View(); got != "" {
+		t.Fatal("search is open before it was started")
+	}
+	m.searchOverlay.Start(0, root)
+	if rows := strings.Count(m.searchOverlay.View(), "\n") + 1; rows < m.contentHeight()-2 {
+		t.Errorf("the search popup is %d rows tall in a %d-row area", rows, m.contentHeight())
+	}
+}

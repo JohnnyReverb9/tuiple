@@ -27,6 +27,10 @@ type FileEntry struct {
 	LinkTarget string
 	Mode       fs.FileMode
 	Extension  string
+	// Depth is how far below the listed directory the entry sits: 0 for
+	// its own children, 1 for the children of an expanded folder, and so
+	// on. Only the file list's tree view sets it.
+	Depth int
 }
 
 // ── Display and sort options ───────────────────────────────────────────

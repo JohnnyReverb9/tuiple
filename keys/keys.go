@@ -63,6 +63,7 @@ const (
 	TabJump       Action = "tab-jump"
 	ToggleSidebar Action = "toggle-sidebar"
 	TogglePreview Action = "toggle-preview"
+	Run           Action = "run"
 	SeekBack      Action = "audio-seek-back"
 	SeekForward   Action = "audio-seek-forward"
 	SeekBackFar   Action = "audio-seek-back-far"
@@ -102,6 +103,9 @@ const (
 	OpenExternal Action = "open-default-app"
 	Reveal       Action = "reveal-in-finder"
 	OpenInTab    Action = "open-in-new-tab"
+	Expand       Action = "expand"
+	Collapse     Action = "collapse"
+	FileInfo     Action = "file-info"
 
 	GitStage       Action = "git-stage"
 	GitUnstage     Action = "git-unstage"
@@ -132,6 +136,8 @@ var Defaults = []Binding{
 	{CursorDown, ScopeList, []string{"down", "j"}, "Move down", "Navigation", "↓ / j"},
 	{Open, ScopeList, []string{"enter", "right", "l"}, "Enter dir / open file", "Navigation", "Enter / → / l"},
 	{Parent, ScopeList, []string{"backspace", "left", "h"}, "Go back to parent", "Navigation", "Backspace / ← / h"},
+	{Expand, ScopeList, []string{">"}, "Expand the folder in place", "Navigation", ""},
+	{Collapse, ScopeList, []string{"<"}, "Collapse the folder", "Navigation", ""},
 	{Top, ScopeList, []string{"g"}, "Go to top", "Navigation", ""},
 	{Bottom, ScopeList, []string{"G"}, "Go to bottom", "Navigation", ""},
 	{HalfPageUp, ScopeList, []string{"ctrl+u"}, "Half page up", "Navigation", "Ctrl+U"},
@@ -172,6 +178,7 @@ var Defaults = []Binding{
 	{Zip, ScopeList, []string{"z"}, "Zip marked entries", "File Operations", ""},
 	{Extract, ScopeList, []string{"Z"}, "Extract archive", "File Operations", ""},
 	{DirSize, ScopeList, []string{"s"}, "Measure directory size", "File Operations", ""},
+	{FileInfo, ScopeList, []string{"I"}, "Get info", "File Operations", ""},
 	{CopyPath, ScopeList, []string{"y"}, "Copy path to the clipboard", "File Operations", ""},
 	{OpenExternal, ScopeList, []string{"O"}, "Open with the default app", "File Operations", ""},
 	{Reveal, ScopeList, []string{"ctrl+o"}, "Reveal in Finder", "File Operations", ""},
@@ -199,6 +206,7 @@ var Defaults = []Binding{
 	{ToggleSidebar, ScopeGlobal, []string{"B"}, "Show / hide the sidebar", "System & Options", ""},
 	{TogglePreview, ScopeGlobal, []string{"V"}, "Show / hide the preview", "System & Options", ""},
 	{Settings, ScopeGlobal, []string{","}, "Settings", "System & Options", ""},
+	{Run, ScopeGlobal, []string{"ctrl+r"}, "Run a project command (make, npm, go…)", "System & Options", "Ctrl+R"},
 	{Shell, ScopeGlobal, []string{"S"}, "Open a shell here", "System & Options", ""},
 	{Help, ScopeGlobal, []string{"?"}, "Keyboard shortcuts", "System & Options", ""},
 	{Quit, ScopeGlobal, []string{"q", "ctrl+c"}, "Quit", "System & Options", "q / Ctrl+C"},

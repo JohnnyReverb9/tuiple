@@ -363,3 +363,59 @@ func TestMouseHitTesting(t *testing.T) {
 		}
 	}
 }
+
+// Expanding a folder lists its contents under it, one level in; the
+// cursor stays on the folder, and collapsing from inside lands back on it.
+func TestExpandAndCollapseInPlace(t *testing.T) {
+	root := fixture(t) // sub/ (inner.txt), alpha.txt, beta.txt
+	m := New(root)
+	m.SetSize(80, 20)
+
+	m, cmd := m.Do(keys.Expand)
+	m = deliver(t, m, cmd)
+	var got []string
+	for _, e := range m.Entries() {
+		got = append(got, strings.Repeat(">", e.Depth)+e.Name)
+	}
+	if want := "sub,>inner.txt,alpha.txt,beta.txt"; strings.Join(got, ",") != want {
+		t.Fatalf("expanded listing = %v, want %s", got, want)
+	}
+	if e := m.SelectedEntry(); e == nil || e.Name != "sub" {
+		t.Fatalf("cursor moved to %v on expanding", e)
+	}
+	if !strings.Contains(m.renderEntry(1, true), "  inner.txt") {
+		t.Error("the child row is not indented")
+	}
+
+	// Expand again steps into the folder; collapse from the child closes it.
+	m, _ = m.Do(keys.Expand)
+	if e := m.SelectedEntry(); e == nil || e.Name != "inner.txt" {
+		t.Fatalf("cursor is on %v, want the first child", e)
+	}
+	m, cmd = m.Do(keys.Collapse)
+	m = deliver(t, m, cmd)
+	if len(m.Entries()) != 3 {
+		t.Fatalf("%d rows after collapsing, want 3", len(m.Entries()))
+	}
+	if e := m.SelectedEntry(); e == nil || e.Name != "sub" {
+		t.Errorf("cursor is on %v after collapsing, want the folder", e)
+	}
+
+	// A refresh keeps the tree open and every row the panel's width.
+	m, cmd = m.Do(keys.Expand)
+	m = deliver(t, m, cmd)
+	m, cmd = m.Update(RefreshListMsg{})
+	m = deliver(t, m, cmd)
+	if len(m.Entries()) != 4 {
+		t.Errorf("a refresh closed the tree: %d rows", len(m.Entries()))
+	}
+	for i := range m.Entries() {
+		if w := lipgloss.Width(m.renderEntry(i, true)); w != 80 {
+			t.Errorf("row %d is %d cells wide, want 80", i, w)
+		}
+	}
+	// Bulk rename covers one directory: the nested file stays out of it.
+	if names := m.bulkRenameNames(); len(names) != 3 {
+		t.Errorf("bulk rename would cover %v", names)
+	}
+}

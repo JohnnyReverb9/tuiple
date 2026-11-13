@@ -13,9 +13,22 @@ the terminal.
 
 ## What it does
 
-Navigation is the usual arrow keys or `hjkl`, with `f` for fuzzy name search
-(four directories deep), `F` for full-text search inside files, and `'` to
-bookmark the current directory into the sidebar.
+Navigation is the usual arrow keys or `hjkl`, and `'` bookmarks the current
+directory into the sidebar. `>` opens the folder under the cursor in place, as
+a tree — its contents listed beneath it, indented — and `<` closes it again; a
+click on a folder's arrow does the same.
+
+`f` goes to a file by name and `F` finds text in files. Both search the whole
+project — from the repository root when there is one — and neither holds up
+the interface: the file list is read once in the background, text search runs
+ripgrep after a pause in the typing (a plain walk stands in when ripgrep is not
+installed), and a preview under the results shows the lines around the match.
+Enter opens the result in the editor, at the matching line; Tab just shows it
+in the list.
+
+`Ctrl+R` lists what the project knows how to run — Makefile targets,
+`package.json` and `composer.json` scripts, the usual `go` and `cargo` verbs —
+and runs the one you pick in the terminal. `I` is Finder's Get Info.
 
 It has tabs, and they work the way Finder's do with the Cmd taken off the
 shortcut: `t` opens one, `w` closes it, `{` and `}` step between them, a digit
@@ -99,6 +112,7 @@ Navigation
 | `↑` `↓` / `k` `j` | Move the cursor |
 | `Enter` `→` `l` | Enter directory, open file |
 | `Backspace` `←` `h` | Up to the parent |
+| `>` / `<` | Expand the folder in place / collapse it |
 | `g` / `G` | Top / bottom |
 | `Ctrl+U` / `Ctrl+D` | Half page up / down |
 | `~` | Home directory |
@@ -132,6 +146,7 @@ Files
 | `n` / `N` | New file / new directory |
 | `z` / `Z` | Zip marked entries / extract the archive |
 | `s` | Measure the size of marked directories |
+| `I` | Get info |
 | `y` | Copy the path to the clipboard |
 | `O` / `Ctrl+O` | Open with the default app / reveal in Finder |
 | `u` / `U` | Undo / redo |
@@ -150,6 +165,7 @@ Search, view, system
 | `o n` `o s` `o d` | Sort by name / size / date |
 | `l` `-` `=` `_` `+` | Audio: play-pause, seek ±5s, seek ±30s |
 | `B` / `V` | Show or hide the sidebar / the preview |
+| `Ctrl+R` | Run a project command |
 | `S` | Shell here |
 | `,` | Settings |
 | `?` | Help |

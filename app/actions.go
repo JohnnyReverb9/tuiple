@@ -125,6 +125,8 @@ func (m Model) runGlobal(action keys.Action, key string) (Model, tea.Cmd, bool) 
 		next, cmd := m.switchTab(idx)
 		return next, cmd, true
 
+	case keys.Run:
+		return m, m.openRun(), true
 	case keys.Palette:
 		return m, m.openPalette(), true
 	case keys.Recent:
@@ -158,9 +160,9 @@ func (m Model) runGlobal(action keys.Action, key string) (Model, tea.Cmd, bool) 
 		m.settingsPopup.Start()
 		return m, nil, true
 	case keys.SearchName:
-		return m, m.searchOverlay.Start(search.ModeNameSearch, m.currentPath), true
+		return m, m.searchOverlay.Start(search.ModeNameSearch, m.projectRoot()), true
 	case keys.SearchContent:
-		return m, m.searchOverlay.Start(search.ModeContentSearch, m.currentPath), true
+		return m, m.searchOverlay.Start(search.ModeContentSearch, m.projectRoot()), true
 
 	case keys.GitPanel:
 		if !config.Get().Git.Enabled {
@@ -285,6 +287,15 @@ func (m Model) afterListInput(prevCursor int, prevPath string, cmds []tea.Cmd) (
 	return m, tea.Batch(cmds...)
 }
 
+// projectRoot is where project-wide features start from: the repository
+// root when the list is inside one, otherwise the directory on screen.
+func (m Model) projectRoot() string {
+	if m.gitRoot != "" {
+		return m.gitRoot
+	}
+	return m.currentPath
+}
+
 // reloadPreview re-reads whatever the cursor is on.
 func (m *Model) reloadPreview() tea.Cmd {
 	entry := m.filelist.SelectedEntry()
@@ -319,6 +330,7 @@ func (m Model) goTo(dir, selectName string) (Model, tea.Cmd) {
 const (
 	pickActions = "actions"
 	pickRecent  = "recent"
+	pickRun     = "run"
 )
 
 // notInPalette lists the actions a palette row cannot sensibly stand
@@ -388,6 +400,9 @@ func (m Model) picked(msg picker.ChosenMsg) (tea.Model, tea.Cmd) {
 	switch msg.Kind {
 	case pickActions:
 		return m.runAction(keys.Action(msg.ID), "")
+
+	case pickRun:
+		return m, runInTerminal(m.projectRoot(), msg.ID)
 
 	case pickRecent:
 		info, err := os.Stat(msg.ID)
