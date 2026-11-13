@@ -1800,6 +1800,7 @@ func (m Model) renderHelp() string {
 			{"H / L", "File history / Blame popup"},
 			{"i", "Focus commit message (Esc to leave)"},
 			{"s  ·  Ctrl+S", "Stash  ·  Commit"},
+			{"Ctrl+A", "Amend the last commit (on / off)"},
 		}},
 		{"Log tab  (branch graph)", []helpItem{
 			{"a", "All branches ↔ current branch only"},

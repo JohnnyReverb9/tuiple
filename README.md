@@ -63,7 +63,8 @@ a player with seeking and metadata. `chafa` gives you a full-quality image view,
 directory and picks you back up when you exit.
 
 Inside a git repository the list gains status markers, the status bar shows the
-branch, and `Ctrl+G` opens a panel for staging, committing, stashes, blame and
+branch, and `Ctrl+G` opens a panel for staging, committing (`Ctrl+A` there amends the last
+commit instead — its message comes back for editing), stashes, blame and
 file history, with a JetBrains-style log: a coloured graph of every branch,
 merges and forks drawn in place, branch and tag labels on their commits, and
 `Enter` on a commit for checkout, merge, rebase, cherry-pick and friends. `b` handles branches — checkout (remote branches become

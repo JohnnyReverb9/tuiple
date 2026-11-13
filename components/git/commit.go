@@ -46,11 +46,18 @@ type commitTab struct {
 
 	input     textinput.Model
 	inputMode commitInputMode
+
+	// amend is the IDE's "Amend" checkbox: the next commit replaces the
+	// last one instead of following it. amendMsg is the message that was
+	// filled in when it was switched on, so switching it off can take
+	// back exactly that and nothing the user typed.
+	amend    bool
+	amendMsg string
 }
 
 func newCommitTab() commitTab {
 	ta := textarea.New()
-	ta.Placeholder = "Commit message — press i to type, Esc to leave, Ctrl+S to commit"
+	ta.Placeholder = "Commit message — i to type, Esc to leave, Ctrl+S to commit, Ctrl+A to amend the last one"
 	ta.Prompt = "│ "
 	ta.CharLimit = 4000
 	ta.ShowLineNumbers = false
@@ -274,11 +281,51 @@ func (m *Model) runStash(msg string) {
 	m.reloadStashes()
 }
 
+// toggleAmend switches amend mode. Turning it on puts the last commit's
+// message in the box — fixing a typo in it is the usual reason to amend —
+// unless something has been typed there already.
+func (m *Model) toggleAmend() {
+	if m.commit.amend {
+		m.commit.amend = false
+		if m.commit.message.Value() == m.commit.amendMsg {
+			m.commit.message.SetValue("")
+		}
+		m.commit.status = "amend off"
+		m.commit.statusErr = false
+		return
+	}
+	last, err := run(m.root, "log", "-1", "--format=%B")
+	if err != nil {
+		m.commit.status = "nothing to amend: no commits yet"
+		m.commit.statusErr = true
+		return
+	}
+	m.commit.amend = true
+	m.commit.amendMsg = strings.TrimSpace(last)
+	if strings.TrimSpace(m.commit.message.Value()) == "" {
+		m.commit.message.SetValue(m.commit.amendMsg)
+	}
+	m.commit.status = "amending the last commit — edit the message, stage more if needed, Ctrl+S"
+	m.commit.statusErr = false
+}
+
 func (m *Model) runCommit() {
 	msg := strings.TrimSpace(m.commit.message.Value())
 	if msg == "" {
 		m.commit.status = "empty commit message"
 		m.commit.statusErr = true
+		return
+	}
+	if m.commit.amend {
+		// Nothing has to be staged: rewording alone is a valid amend,
+		// and whatever is staged goes into the commit as well.
+		if _, err := runWithStdin(m.root, msg, "commit", "--amend", "-F", "-"); err != nil {
+			m.commit.status = err.Error()
+			m.commit.statusErr = true
+			return
+		}
+		m.commit.amend = false
+		m.commitDone("amended: " + firstLine(msg))
 		return
 	}
 	hasStaged := false
@@ -298,7 +345,12 @@ func (m *Model) runCommit() {
 		m.commit.statusErr = true
 		return
 	}
-	m.commit.status = "committed: " + firstLine(msg)
+	m.commitDone("committed: " + firstLine(msg))
+}
+
+// commitDone is what follows any successful commit.
+func (m *Model) commitDone(status string) {
+	m.commit.status = status
 	m.commit.statusErr = false
 	m.commit.message.SetValue("")
 	m.commit.focus = commitFocusList
@@ -426,6 +478,9 @@ func (m Model) updateCommitList(msg tea.Msg) (Model, tea.Cmd, bool) {
 	case "ctrl+s":
 		m.runCommit()
 		return m, nil, true
+	case "ctrl+a":
+		m.toggleAmend()
+		return m, nil, true
 	}
 	return m, nil, false
 }
@@ -463,6 +518,9 @@ func (m Model) updateCommitMessage(msg tea.Msg) (Model, tea.Cmd, bool) {
 			return m, nil, true
 		case "ctrl+s":
 			m.runCommit()
+			return m, nil, true
+		case "ctrl+a":
+			m.toggleAmend()
 			return m, nil, true
 		}
 	}
@@ -627,9 +685,18 @@ func (m Model) renderCommitDiff(w, h int) string {
 
 func (m Model) renderCommitMessage(w int) string {
 	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentYellow).Bold(true)
-	title := titleStyle.Render(" Message")
+	// In amend mode the title says so, in a different colour: this is
+	// the one state where Ctrl+S rewrites a commit instead of adding one.
+	name, action := " Message", "commit"
+	if m.commit.amend {
+		titleStyle = titleStyle.Foreground(theme.AccentMagenta)
+		name, action = " Amend last commit", "amend"
+	}
+	title := titleStyle.Render(name)
 	if m.commit.focus == commitFocusMessage {
-		title = titleStyle.Underline(true).Render(" Message (Esc to leave, Ctrl+S to commit)")
+		title = titleStyle.Underline(true).Render(name + " (Esc to leave, Ctrl+S to " + action + ")")
+	} else if m.commit.amend {
+		title += lipgloss.NewStyle().Foreground(theme.FgDimColor).Render("  i edit · Ctrl+S amend · Ctrl+A cancel")
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, title, m.commit.message.View())
 }
