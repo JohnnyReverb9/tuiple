@@ -11,8 +11,11 @@ var (
 	BgColor      = lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#222436"}
 	BgDarkColor  = lipgloss.AdaptiveColor{Light: "#f1f5f9", Dark: "#1e2030"}
 	BgLightColor = lipgloss.AdaptiveColor{Light: "#e2e8f0", Dark: "#2f334d"}
-	BgHighlight  = lipgloss.AdaptiveColor{Light: "#f8fafc", Dark: "#2d3f76"}
-	BgSelected   = lipgloss.AdaptiveColor{Light: "#dbeafe", Dark: "#2d3f76"}
+	// BgSelected is the cursor of whichever panel has the keyboard;
+	// BgHighlight is the same row once the focus has moved elsewhere —
+	// still findable, no longer claiming attention.
+	BgHighlight = lipgloss.AdaptiveColor{Light: "#eef2f7", Dark: "#2a2e48"}
+	BgSelected  = lipgloss.AdaptiveColor{Light: "#dbeafe", Dark: "#2d3f76"}
 
 	// FgColor      = lipgloss.AdaptiveColor{Light: "#0f172a", Dark: "#c0caf5"}
 	FgColor      = lipgloss.AdaptiveColor{Light: "#0f172a", Dark: "#c8d3f5"}
@@ -27,6 +30,10 @@ var (
 	AccentYellow  = lipgloss.AdaptiveColor{Light: "#b45309", Dark: "#ffc777"}
 	AccentMagenta = lipgloss.AdaptiveColor{Light: "#7e22ce", Dark: "#c099ff"}
 	AccentOrange  = lipgloss.AdaptiveColor{Light: "#c2410c", Dark: "#ff966c"}
+
+	// BackdropColor is what the panels are drawn in while a popup floats
+	// over them: present, but out of the way.
+	BackdropColor = lipgloss.AdaptiveColor{Light: "#c5ccd8", Dark: "#474d75"}
 
 	// Separators & borders
 	SeparatorColor = lipgloss.AdaptiveColor{Light: "#cbd5e1", Dark: "#444a73"}
@@ -47,7 +54,7 @@ var (
 
 var (
 	SidebarSection = lipgloss.NewStyle().
-			Foreground(FgDimColor).
+			Foreground(FgMutedColor).
 			Bold(true)
 
 	SidebarItem = lipgloss.NewStyle().
@@ -97,7 +104,16 @@ var (
 	ListHeader = lipgloss.NewStyle().
 			Foreground(FgDimColor).
 			Bold(true)
+
+	// ListHeaderActive marks the column the list is sorted by.
+	ListHeaderActive = lipgloss.NewStyle().
+				Foreground(FgColor).
+				Bold(true)
 )
+
+// GitUntracked colours a file git does not know about yet — the reddish
+// brown a JetBrains project tree uses for unversioned files.
+var GitUntracked = lipgloss.AdaptiveColor{Light: "#b4532a", Dark: "#ff966c"}
 
 // ── Status bar ─────────────────────────────────────────────────────────
 
@@ -133,6 +149,12 @@ var (
 var (
 	PreviewTitle = lipgloss.NewStyle().
 			Foreground(AccentYellow).
+			Bold(true)
+
+	// PreviewName heads the preview panel: the file's name in the text
+	// colour, so the one loud thing on screen stays the cursor.
+	PreviewName = lipgloss.NewStyle().
+			Foreground(FgColor).
 			Bold(true)
 
 	PreviewContent = lipgloss.NewStyle().

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -79,6 +80,22 @@ type ArchiveRequestMsg struct {
 // ExtractRequestMsg asks the app to unpack the archive under the cursor.
 type ExtractRequestMsg struct{ Path string }
 
+// DuplicateRequestMsg asks the app to copy entries next to themselves.
+type DuplicateRequestMsg struct{ Entries []filesystem.FileEntry }
+
+// CopyPathMsg asks the app to put absolute paths on the system clipboard.
+type CopyPathMsg struct{ Paths []string }
+
+// OpenExternalMsg asks the app to hand a path to macOS: opened with its
+// default application, or revealed in a Finder window.
+type OpenExternalMsg struct {
+	Path   string
+	Reveal bool
+}
+
+// OpenInTabMsg asks the app to open a directory in a new tab.
+type OpenInTabMsg struct{ Path string }
+
 // ClearSelectionMsg tells the list to drop its active selections.
 type ClearSelectionMsg struct{}
 
@@ -90,6 +107,10 @@ type RefreshListMsg struct{}
 // network share, or one with tens of thousands of files — no longer
 // freezes the interface while it is being listed.
 type EntriesLoadedMsg struct {
+	// ListID names the list that asked. With tabs there are several
+	// lists alive at once, and a read started in one of them must not
+	// land in whichever happens to be on screen when it finishes.
+	ListID  int64
 	Path    string
 	Token   int
 	Entries []filesystem.FileEntry
@@ -105,17 +126,28 @@ type SortListMsg struct {
 	Mode filesystem.SortMode
 }
 
-
 // ── Model ──────────────────────────────────────────────────────────────
 
-type historyEntry struct {
+// location is one stop in the back / forward history: a directory and
+// where the cursor was when it was left.
+type location struct {
 	path   string
+	name   string // entry under the cursor, the reliable way back to it
 	cursor int
 	offset int
 }
 
+// historyLimit caps each of the two stacks. Nobody steps back a hundred
+// directories, and an unbounded slice in a long-lived tab is a leak.
+const historyLimit = 100
+
+// nextID hands every list its own identity; see EntriesLoadedMsg.ListID.
+var nextID atomic.Int64
+
 // Model is the file-list Bubble Tea model.
 type Model struct {
+	id int64
+
 	// allEntries is the directory as read from disk; entries is that
 	// list after the live filter. Keeping both means typing in the
 	// filter never touches the disk.
@@ -133,7 +165,11 @@ type Model struct {
 	height  int
 	focused bool
 
-	history  []historyEntry
+	// back and forward are the two halves of the navigation history,
+	// most recent last. Going anywhere new clears forward, the way a
+	// browser does.
+	back     []location
+	forward  []location
 	selected map[string]struct{}
 	err      error
 
@@ -168,6 +204,7 @@ func (m *Model) SetGitState(fileStat map[string]string, dirHas map[string]struct
 func New(path string) Model {
 	cfg := config.Get()
 	m := Model{
+		id:          nextID.Add(1),
 		currentPath: path,
 		sortMode:    cfg.SortMode(),
 		showHidden:  cfg.Files.ShowHidden,
@@ -179,12 +216,58 @@ func New(path string) Model {
 	return m
 }
 
+// Spawn creates a list for another tab: a different directory and a
+// clean history, but the same view of it — whoever turned hidden files
+// on or sorted by date expects the new tab to look the same.
+func (m Model) Spawn(path string) Model {
+	next := Model{
+		id:          nextID.Add(1),
+		currentPath: path,
+		sortMode:    m.sortMode,
+		showHidden:  m.showHidden,
+		width:       m.width,
+		height:      m.height,
+		focused:     true,
+		selected:    make(map[string]struct{}),
+		dirSizes:    m.dirSizes,
+		gitFileStat: nil,
+	}
+	next.loadNow()
+	return next
+}
+
 // ── Public accessors ───────────────────────────────────────────────────
 
-func (m Model) CursorIdx() int                    { return m.cursor }
-func (m Model) CurrentPath() string                { return m.currentPath }
-func (m Model) Entries() []filesystem.FileEntry    { return m.entries }
-func (m Model) IsFiltering() bool                  { return m.filtering }
+func (m Model) ID() int64                       { return m.id }
+func (m Model) CursorIdx() int                  { return m.cursor }
+func (m Model) CurrentPath() string             { return m.currentPath }
+func (m Model) Entries() []filesystem.FileEntry { return m.entries }
+func (m Model) IsFiltering() bool               { return m.filtering }
+func (m Model) Filter() string                  { return m.filter }
+func (m Model) ShowHidden() bool                { return m.showHidden }
+func (m Model) SortMode() filesystem.SortMode   { return m.sortMode }
+func (m Model) CanGoBack() bool                 { return len(m.back) > 0 }
+func (m Model) CanGoForward() bool              { return len(m.forward) > 0 }
+
+// MarkedCount is how many entries of the current directory are marked.
+func (m Model) MarkedCount() int { return len(m.selected) }
+
+// MarkedSize totals the marked files, for the status bar. Directories
+// count only once they have been measured with s.
+func (m Model) MarkedSize() int64 {
+	var total int64
+	for _, e := range m.entries {
+		if _, ok := m.selected[e.Path]; !ok {
+			continue
+		}
+		if e.IsDir {
+			total += m.dirSizes[e.Path]
+		} else {
+			total += e.Size
+		}
+	}
+	return total
+}
 
 // SelectByName positions the cursor on the entry with the given name.
 // When a directory read is still in flight the name is remembered and
@@ -251,16 +334,74 @@ func (m Model) SelectedEntries() []filesystem.FileEntry {
 
 // ── Size / focus setters ───────────────────────────────────────────────
 
-func (m *Model) SetSize(w, h int) { m.width = w; m.height = h }
+func (m *Model) SetSize(w, h int)  { m.width = w; m.height = h }
 func (m *Model) SetFocused(f bool) { m.focused = f }
 
-// ── NavigateTo ─────────────────────────────────────────────────────────
+// ── Navigation ─────────────────────────────────────────────────────────
 
-// NavigateTo pushes the current dir onto the history stack and navigates.
+// NavigateTo goes to a directory and records where it came from, so
+// Back returns there. Going anywhere new drops the forward half of the
+// history, the way a browser does.
 func (m Model) NavigateTo(path string) (Model, tea.Cmd) {
-	m.history = append(m.history, historyEntry{
-		path: m.currentPath, cursor: m.cursor, offset: m.offset,
-	})
+	if path == m.currentPath {
+		// Already here: reload in place rather than stacking a history
+		// entry that Back would have to step over.
+		loadCmd := m.startLoad(m.cursorName(), m.cursor, m.offset)
+		return m, tea.Batch(loadCmd, func() tea.Msg { return DirChangedMsg{Path: path} })
+	}
+	m.back = pushLocation(m.back, m.here())
+	m.forward = nil
+	return m.jump(path, "", 0, 0)
+}
+
+// Back returns to the previous directory in the history.
+func (m Model) Back() (Model, tea.Cmd) {
+	n := len(m.back)
+	if n == 0 {
+		return m, nil
+	}
+	prev := m.back[n-1]
+	m.back = m.back[:n-1]
+	m.forward = pushLocation(m.forward, m.here())
+	return m.jump(prev.path, prev.name, prev.cursor, prev.offset)
+}
+
+// Forward undoes a Back.
+func (m Model) Forward() (Model, tea.Cmd) {
+	n := len(m.forward)
+	if n == 0 {
+		return m, nil
+	}
+	next := m.forward[n-1]
+	m.forward = m.forward[:n-1]
+	m.back = pushLocation(m.back, m.here())
+	return m.jump(next.path, next.name, next.cursor, next.offset)
+}
+
+// here describes the current position, for the history stacks.
+func (m Model) here() location {
+	return location{path: m.currentPath, name: m.cursorName(), cursor: m.cursor, offset: m.offset}
+}
+
+func (m Model) cursorName() string {
+	if e := m.SelectedEntry(); e != nil {
+		return e.Name
+	}
+	return ""
+}
+
+func pushLocation(stack []location, loc location) []location {
+	stack = append(stack, loc)
+	if len(stack) > historyLimit {
+		stack = append([]location(nil), stack[len(stack)-historyLimit:]...)
+	}
+	return stack
+}
+
+// jump switches directory without touching the history; the callers
+// above decide what gets recorded. selectName is the entry to land on,
+// cursor and offset where to land if it is gone.
+func (m Model) jump(path, selectName string, cursor, offset int) (Model, tea.Cmd) {
 	m.currentPath = path
 	m.cursor = 0
 	m.offset = 0
@@ -268,7 +409,11 @@ func (m Model) NavigateTo(path string) (Model, tea.Cmd) {
 	m.filtering = false
 	m.entries = nil
 	m.allEntries = nil
-	loadCmd := m.startLoad("", 0, 0)
+	// Marks belong to the directory they were made in. Carrying them
+	// along would leave the bulk operations acting on entries that are
+	// no longer on screen — or, worse, on nothing at all.
+	m.selected = make(map[string]struct{})
+	loadCmd := m.startLoad(selectName, cursor, offset)
 
 	return m, tea.Batch(loadCmd, func() tea.Msg { return DirChangedMsg{Path: path} })
 }
@@ -306,6 +451,7 @@ func (m *Model) startLoad(selectName string, cursor, offset int) tea.Cmd {
 	m.pendingCursor = cursor
 	m.pendingOffset = offset
 
+	id := m.id
 	token := m.loadToken
 	path := m.currentPath
 	showHidden := m.showHidden
@@ -316,7 +462,7 @@ func (m *Model) startLoad(selectName string, cursor, offset int) tea.Cmd {
 		if err == nil {
 			filesystem.SortEntries(entries, sortMode)
 		}
-		return EntriesLoadedMsg{Path: path, Token: token, Entries: entries, Err: err}
+		return EntriesLoadedMsg{ListID: id, Path: path, Token: token, Entries: entries, Err: err}
 	}
 }
 
@@ -438,6 +584,27 @@ func (m Model) gitMarkerInfo(entry filesystem.FileEntry) (string, lipgloss.Termi
 	return string(ch), col
 }
 
+// gitNameColor is the colour a changed file's name is drawn in, and
+// whether it has one at all. Directories keep their own colour — the
+// marker column already says there is something inside.
+func (m Model) gitNameColor(entry filesystem.FileEntry) (lipgloss.TerminalColor, bool) {
+	if entry.IsDir {
+		return nil, false
+	}
+	code, ok := m.gitFileStat[entry.Path]
+	if !ok || len(code) < 2 {
+		return nil, false
+	}
+	if code == "??" {
+		return theme.GitUntracked, true
+	}
+	ch, col := gitMarkerChar(code)
+	if ch == ' ' {
+		return nil, false
+	}
+	return col, true
+}
+
 func gitMarkerChar(code string) (rune, lipgloss.TerminalColor) {
 	if len(code) < 2 {
 		return ' ', theme.FgDimColor
@@ -479,7 +646,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case EntriesLoadedMsg:
 		// Ignore results for a directory we have already left, or from a
 		// read that a newer one has superseded.
-		if msg.Token != m.loadToken || msg.Path != m.currentPath {
+		if msg.ListID != m.id || msg.Token != m.loadToken || msg.Path != m.currentPath {
 			return m, nil
 		}
 		m.loading = false
@@ -586,7 +753,13 @@ func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if !bound {
 		return m, nil
 	}
+	return m.Do(action)
+}
 
+// Do carries out a file-list action. Keystrokes arrive here through the
+// keymap; the command palette and the Cmd shortcuts call it directly,
+// which is why it does not care whether the list has focus.
+func (m Model) Do(action keys.Action) (Model, tea.Cmd) {
 	switch action {
 	case keys.CursorUp:
 		if m.cursor > 0 {
@@ -659,10 +832,58 @@ func (m Model) updateNavigation(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.fixScroll()
 			}
 		}
+	case keys.SelectAll:
+		for _, e := range m.entries {
+			m.selected[e.Path] = struct{}{}
+		}
+	case keys.InvertMarks:
+		for _, e := range m.entries {
+			if _, ok := m.selected[e.Path]; ok {
+				delete(m.selected, e.Path)
+			} else {
+				m.selected[e.Path] = struct{}{}
+			}
+		}
 	case keys.ClearMarks:
 		m.selected = make(map[string]struct{})
-		m.filtering = false
-		m.filter = ""
+		if m.filter != "" {
+			m.filtering = false
+			m.filter = ""
+			name := m.cursorName()
+			m.applyFilter()
+			m.placeCursor(name, 0, 0)
+		}
+	case keys.Duplicate:
+		if entries := m.SelectedEntries(); len(entries) > 0 {
+			return m, func() tea.Msg { return DuplicateRequestMsg{Entries: entries} }
+		}
+	case keys.CopyPath:
+		entries := m.SelectedEntries()
+		if len(entries) == 0 {
+			// An empty directory still has a path worth copying.
+			dir := m.currentPath
+			return m, func() tea.Msg { return CopyPathMsg{Paths: []string{dir}} }
+		}
+		paths := make([]string, 0, len(entries))
+		for _, e := range entries {
+			paths = append(paths, e.Path)
+		}
+		return m, func() tea.Msg { return CopyPathMsg{Paths: paths} }
+	case keys.OpenExternal, keys.Reveal:
+		target := m.currentPath
+		if e := m.SelectedEntry(); e != nil {
+			target = e.Path
+		}
+		reveal := action == keys.Reveal
+		return m, func() tea.Msg { return OpenExternalMsg{Path: target, Reveal: reveal} }
+	case keys.OpenInTab:
+		// A folder opens as itself; on a file the useful reading is
+		// "another tab right here".
+		target := m.currentPath
+		if e := m.SelectedEntry(); e != nil && e.IsDir {
+			target = e.Path
+		}
+		return m, func() tea.Msg { return OpenInTabMsg{Path: target} }
 	case keys.Rename:
 		if entry := m.SelectedEntry(); entry != nil {
 			return m, func() tea.Msg { return RenameRequestMsg{Entry: *entry} }
@@ -753,33 +974,83 @@ func (m Model) enterSelected() (Model, tea.Cmd) {
 	return m, func() tea.Msg { return OpenFileRequestMsg{Path: entry.Path} }
 }
 
+// goUp opens the enclosing directory and lands on the one just left.
+// It is a navigation like any other, so Back leads into the child again.
 func (m Model) goUp() (Model, tea.Cmd) {
-	childName := filepath.Base(m.currentPath)
-
-	if len(m.history) > 0 {
-		prev := m.history[len(m.history)-1]
-		m.history = m.history[:len(m.history)-1]
-		m.currentPath = prev.path
-		m.filter = ""
-		m.filtering = false
-		m.entries = nil
-		m.allEntries = nil
-		// Land on the directory we came out of; fall back to where the
-		// cursor was when we left this listing.
-		loadCmd := m.startLoad(childName, prev.cursor, prev.offset)
-		return m, tea.Batch(loadCmd, func() tea.Msg { return DirChangedMsg{Path: m.currentPath} })
-	}
-
 	parent := filepath.Dir(m.currentPath)
 	if parent == m.currentPath {
 		return m, nil
 	}
+	childName := filepath.Base(m.currentPath)
 
-	newM, cmd := m.NavigateTo(parent)
-	// NavigateTo starts at the top; prefer the directory we just left.
-	newM.pendingSelect = childName
-	return newM, cmd
+	// Coming back out the way we went in: put the scroll position back
+	// too, so the listing looks exactly as it did before the detour.
+	offset := 0
+	if n := len(m.back); n > 0 && m.back[n-1].path == parent {
+		offset = m.back[n-1].offset
+	}
+
+	m.back = pushLocation(m.back, m.here())
+	m.forward = nil
+	return m.jump(parent, childName, 0, offset)
 }
+
+// ── Mouse ──────────────────────────────────────────────────────────────
+
+// EntryAt maps a row of the panel to an entry index. Row 0 is the column
+// header, so the first entry sits on row 1.
+func (m Model) EntryAt(row int) (int, bool) {
+	idx := m.offset + row - 1
+	if row < 1 || idx < 0 || idx >= len(m.entries) {
+		return 0, false
+	}
+	return idx, true
+}
+
+// SortAt tells which sort order a click on the column header asks for,
+// x being the column inside the panel.
+func (m Model) SortAt(x int) filesystem.SortMode {
+	sizeStart := 3 + m.nameWidth() + 1
+	if m.hasGitState() {
+		sizeStart += 2
+	}
+	switch {
+	case x < sizeStart:
+		return filesystem.SortByName
+	case x < sizeStart+sizeColW+1:
+		return filesystem.SortBySize
+	}
+	return filesystem.SortByDate
+}
+
+// WithCursor puts the cursor on an entry, as a click does.
+func (m Model) WithCursor(idx int) Model {
+	if idx >= 0 && idx < len(m.entries) {
+		m.cursor = idx
+		m.fixScroll()
+	}
+	return m
+}
+
+// ToggleMarkAt marks or unmarks an entry without moving on to the next
+// one — the Cmd-click of a file manager.
+func (m Model) ToggleMarkAt(idx int) Model {
+	if idx < 0 || idx >= len(m.entries) {
+		return m
+	}
+	path := m.entries[idx].Path
+	if _, ok := m.selected[path]; ok {
+		delete(m.selected, path)
+	} else {
+		m.selected[path] = struct{}{}
+	}
+	m.cursor = idx
+	m.fixScroll()
+	return m
+}
+
+// OpenSelected enters the directory or opens the file under the cursor.
+func (m Model) OpenSelected() (Model, tea.Cmd) { return m.enterSelected() }
 
 // ── View ───────────────────────────────────────────────────────────────
 
@@ -863,15 +1134,39 @@ func (m Model) View() string {
 	return strings.Join(lines, "\n")
 }
 
+// renderHeader draws the column titles. The column the list is sorted by
+// is written in the text colour and carries an arrow — ▾ for the usual
+// direction, ▴ when the order is reversed — the way Finder marks it.
 func (m Model) renderHeader() string {
 	nameW := m.nameWidth()
-	name := theme.ListHeader.Width(nameW).Render("Name")
-	size := theme.ListHeader.Width(sizeColW).Align(lipgloss.Right).Render("Size")
-	date := theme.ListHeader.Width(dateColW()).Render("Modified")
+	_, reversed := filesystem.SortOptions()
+	arrow := " ▾"
+	if reversed {
+		arrow = " ▴"
+	}
+
+	title := func(label string, modes ...filesystem.SortMode) (string, lipgloss.Style) {
+		for _, mode := range modes {
+			if m.sortMode == mode {
+				return label + arrow, theme.ListHeaderActive
+			}
+		}
+		return label, theme.ListHeader
+	}
+
+	nameLabel, nameStyle := title("Name", filesystem.SortByName)
+	if m.sortMode == filesystem.SortByType {
+		nameLabel, nameStyle = "Name · by type"+arrow, theme.ListHeaderActive
+	}
+	sizeLabel, sizeStyle := title("Size", filesystem.SortBySize)
+	dateLabel, dateStyle := title("Modified", filesystem.SortByDate)
+
+	name := nameStyle.Width(nameW).MaxWidth(nameW).Render(nameLabel)
+	size := sizeStyle.Width(sizeColW).Align(lipgloss.Right).Render(sizeLabel)
+	date := dateStyle.Width(dateColW()).MaxWidth(dateColW()).Render(dateLabel)
 	if m.hasGitState() {
-		// Layout mirrors the data row: " " icon " " name " " S(1) " " size " " date
-		gitHdr := theme.ListHeader.Width(1).Render("S")
-		return fmt.Sprintf("   %s %s %s %s", name, gitHdr, size, date)
+		// Layout mirrors the data row: " " icon " " name " " git(1) " " size " " date
+		return fmt.Sprintf("   %s   %s %s", name, size, date)
 	}
 	// " " icon(1) " " name " " size " " date
 	return fmt.Sprintf("   %s %s %s", name, size, date)
@@ -934,6 +1229,15 @@ func (m Model) renderEntry(idx int, showIcons bool) string {
 		return fmt.Sprintf(" %s %s %s %s", ic, nm, sz, dt)
 	}
 
+	// A marked row trades its icon for a tick, and keeps it under the
+	// cursor: the cursor must never hide what is and is not marked.
+	iconSymbol, iconColor := icon.Symbol, lipgloss.TerminalColor(icon.Color)
+	cursorNameColor := lipgloss.TerminalColor(theme.FgColor)
+	if isMarked {
+		iconSymbol, iconColor = "✓", theme.AccentYellow
+		cursorNameColor = theme.AccentYellow
+	}
+
 	// ── Selected row (solid background, per-segment) ─────────────────
 	// We apply the background to every segment individually so that inner
 	// ANSI foreground codes are not reset by an outer Render() wrapper, and
@@ -943,8 +1247,8 @@ func (m Model) renderEntry(idx int, showIcons bool) string {
 			return s.Background(theme.BgSelected).Bold(true)
 		}
 		sp := applyBg(lipgloss.NewStyle()).Render(" ")
-		iconStr := applyBg(lipgloss.NewStyle().Foreground(icon.Color)).Width(1).MaxWidth(1).Render(icon.Symbol)
-		nameStr := applyBg(lipgloss.NewStyle()).Width(nameW).Render(truncate(name, nameW))
+		iconStr := applyBg(lipgloss.NewStyle().Foreground(iconColor)).Width(1).MaxWidth(1).Render(iconSymbol)
+		nameStr := applyBg(lipgloss.NewStyle().Foreground(cursorNameColor)).Width(nameW).Render(truncate(name, nameW))
 		sizeRend := applyBg(lipgloss.NewStyle()).Width(sizeColW).Align(lipgloss.Right).
 			MaxWidth(sizeColW).Render(truncate(sizeStr, sizeColW))
 		dateRend := applyBg(lipgloss.NewStyle()).Width(dateW).MaxWidth(dateW).
@@ -963,8 +1267,8 @@ func (m Model) renderEntry(idx int, showIcons bool) string {
 			return s.Background(theme.BgHighlight).Foreground(theme.FgColor)
 		}
 		sp := applyBg(lipgloss.NewStyle()).Render(" ")
-		iconStr := applyBg(lipgloss.NewStyle().Foreground(icon.Color)).Width(1).MaxWidth(1).Render(icon.Symbol)
-		nameStr := applyBg(lipgloss.NewStyle()).Width(nameW).Render(truncate(name, nameW))
+		iconStr := applyBg(lipgloss.NewStyle()).Foreground(iconColor).Width(1).MaxWidth(1).Render(iconSymbol)
+		nameStr := applyBg(lipgloss.NewStyle()).Foreground(cursorNameColor).Width(nameW).Render(truncate(name, nameW))
 		sizeRend := applyBg(lipgloss.NewStyle()).Width(sizeColW).Align(lipgloss.Right).
 			MaxWidth(sizeColW).Render(truncate(sizeStr, sizeColW))
 		dateRend := applyBg(lipgloss.NewStyle()).Width(dateW).MaxWidth(dateW).
@@ -992,6 +1296,13 @@ func (m Model) renderEntry(idx int, showIcons bool) string {
 		nameStyle = theme.FileName
 	}
 
+	// Inside a repository a changed file takes the colour of its status,
+	// the way a JetBrains project tree paints it: the eye finds what
+	// changed without reading the marker column.
+	if col, changed := m.gitNameColor(entry); changed {
+		nameStyle = lipgloss.NewStyle().Foreground(col)
+	}
+
 	nameStr := nameStyle.Width(nameW).MaxWidth(nameW).Render(name)
 	sizeRendered := theme.FileSize.Width(sizeColW).Align(lipgloss.Right).
 		MaxWidth(sizeColW).Render(truncate(sizeStr, sizeColW))
@@ -999,7 +1310,7 @@ func (m Model) renderEntry(idx int, showIcons bool) string {
 	// Visual indicator for marked (multi-selected) rows
 	if isMarked {
 		iconCell = lipgloss.NewStyle().Foreground(theme.AccentYellow).Width(1).MaxWidth(1).Render("✓")
-		nameStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Width(nameW).MaxWidth(nameW).Render(name)
+		nameStr = lipgloss.NewStyle().Foreground(theme.AccentYellow).Bold(true).Width(nameW).MaxWidth(nameW).Render(name)
 	}
 
 	dateRendered := theme.FileDate.Width(dateW).MaxWidth(dateW).Render(truncate(dateStr, dateW))

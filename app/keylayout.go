@@ -96,6 +96,7 @@ func (m *Model) normalizeKey(k tea.KeyMsg) tea.KeyMsg {
 func (m Model) acceptsText() bool {
 	return m.dialogMode != DialogNone ||
 		m.filelist.IsFiltering() ||
+		m.picker.AcceptsText() ||
 		m.searchOverlay.AcceptsText() ||
 		m.gitOverlay.AcceptsText() ||
 		m.branchesPopup.AcceptsText() ||

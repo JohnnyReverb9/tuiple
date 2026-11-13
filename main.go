@@ -21,8 +21,11 @@ var (
 // options is the parsed command line.
 type options struct {
 	startDir string
-	cwdFile  string // written on exit so a shell wrapper can cd there
-	exit     bool   // a flag printed its output; nothing left to run
+	// explicitDir is true when a path was given on the command line —
+	// that is a request for that directory, not for the last session.
+	explicitDir bool
+	cwdFile     string // written on exit so a shell wrapper can cd there
+	exit        bool   // a flag printed its output; nothing left to run
 }
 
 func main() {
@@ -53,7 +56,20 @@ func main() {
 		return
 	}
 
-	model := app.New(opts.startDir).WithExitCwdFile(opts.cwdFile)
+	model := app.New(opts.startDir)
+	if !opts.explicitDir && config.Get().Files.StartDir == config.StartWithLast {
+		// Nothing saved yet, or none of it still exists: fall through to
+		// the single tab built above.
+		if dirs, active, ok := app.LoadSession(); ok {
+			model = app.NewWithTabs(dirs, active)
+		}
+	}
+	if opts.explicitDir {
+		// `tuiple some/dir` is a look at that directory, not the session
+		// to come back to; leave the saved tabs as they are.
+		model = model.WithoutSession()
+	}
+	model = model.WithExitCwdFile(opts.cwdFile)
 	p := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),
@@ -101,13 +117,16 @@ func parseArgs(args []string) (options, error) {
 				return opts, fmt.Errorf("unknown flag %q (try --help)", arg)
 			}
 			opts.startDir = arg
+			opts.explicitDir = true
 		}
 	}
 	return opts, nil
 }
 
 // defaultStartDir honours the files.start_dir setting: the home
-// directory (the long-standing default) or wherever the shell was.
+// directory (the long-standing default) or wherever the shell was. The
+// third value, "last", restores a whole session and is handled in main;
+// this is what it falls back to when there is no session to restore.
 func defaultStartDir() string {
 	if config.Get().Files.StartDir == config.StartInCwd {
 		if cwd, err := os.Getwd(); err == nil && cwd != "" {
@@ -128,6 +147,7 @@ func printUsage() {
 	fmt.Println("tuiple — a 3-panel TUI file manager with git integration")
 	fmt.Println()
 	fmt.Println("Usage:")
+	fmt.Println("  tuiple                  open per files.start_dir (home, cwd, or the last tabs)")
 	fmt.Println("  tuiple [path]           open at path")
 	fmt.Println("  tuiple --cwd-file PATH  write the directory you exit in to PATH")
 	fmt.Println("  tuiple --shell-init     print a shell function that cds on exit")

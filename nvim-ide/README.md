@@ -30,6 +30,9 @@ What the script does:
 Go and PHP need `go` and `php` themselves (`brew install go php`), otherwise their
 language servers won't install.
 
+> [tuiple](../README.md#cmd-shortcuts) reads the same Cmd keys in this profile:
+> Cmd+Shift+A, Cmd+E, Cmd+Shift+O, Cmd+Shift+F and Cmd+[ / Cmd+] do there what they do here.
+
 > Cmd shortcuts only work in the "nvim IDE" profile. Turn it on in
 > iTerm2 → Settings → Profiles → nvim IDE → Other Actions → Set as Default, then open a new window.
 > In that profile Cmd+D / Cmd+F / Cmd+R / Cmd+O / Cmd+[ ] no longer do their iTerm thing

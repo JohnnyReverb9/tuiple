@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JohnnyReverb9/tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/config"
 )
 
 // AuditSource describes how a logged history event came to be: was it
@@ -43,10 +43,12 @@ const (
 
 var auditMu sync.Mutex // serialises file writes (the main goroutine is sequential, but defense in depth)
 
-// auditPath returns ~/.config/tuiple/audit.jsonl, alongside the existing
-// bookmarks.json so both tuiple state files live in one place.
+// auditPath returns audit.jsonl next to the settings file — normally
+// ~/.config/tuiple, alongside bookmarks.json. Following the settings
+// file rather than a fixed path means TUIPLE_CONFIG moves the log too,
+// which is what keeps a test run out of the real one.
 func auditPath() string {
-	return filepath.Join(filesystem.HomeDir(), ".config", "tuiple", "audit.jsonl")
+	return filepath.Join(filepath.Dir(config.Path()), "audit.jsonl")
 }
 
 // AppendAudit writes one JSONL record describing ev to the audit log.

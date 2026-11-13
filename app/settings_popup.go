@@ -314,11 +314,19 @@ func (h SettingsPopup) rows() []settingRow {
 			{
 				kind:  settingChoice,
 				label: "Open in",
-				desc:  "where tuiple opens when given no path",
+				dyn: func(c config.Config) string {
+					switch c.Files.StartDir {
+					case config.StartInCwd:
+						return "the directory the shell is in"
+					case config.StartWithLast:
+						return "the tabs you had open last time"
+					}
+					return "your home directory"
+				},
 				value: func(c config.Config) string { return string(c.Files.StartDir) },
 				step: func(c *config.Config, dir int) {
 					c.Files.StartDir = config.StartDir(cycle(string(c.Files.StartDir),
-						[]string{string(config.StartInHome), string(config.StartInCwd)}, dir))
+						[]string{string(config.StartInHome), string(config.StartInCwd), string(config.StartWithLast)}, dir))
 				},
 				reset: func(c *config.Config) { c.Files.StartDir = def.Files.StartDir },
 			},

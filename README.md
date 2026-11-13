@@ -17,6 +17,24 @@ Navigation is the usual arrow keys or `hjkl`, with `f` for fuzzy name search
 (four directories deep), `F` for full-text search inside files, and `'` to
 bookmark the current directory into the sidebar.
 
+It has tabs, and they work the way Finder's do with the Cmd taken off the
+shortcut: `t` opens one, `w` closes it, `{` and `}` step between them, a digit
+jumps straight to that tab. Each tab keeps its own directory, cursor, marks,
+sort order and history; `[` and `]` go back and forward through that history
+the way a browser does. Set `files.start_dir` to `last` and the tabs you had
+open come back the next time you start.
+
+`Ctrl+P` opens the command palette — every action, with the key it is bound
+to, narrowed as you type — so nothing has to be remembered before it can be
+used. `e` lists recent files and places: what you opened, the projects and
+bookmarks you went to on purpose.
+
+The mouse does what it does in a file manager. A click selects, a second one
+opens; the sidebar, the tabs, the breadcrumb segments and its back / forward
+arrows are all clickable; a click on a column title sorts by that column. The
+middle button is the browser's — it closes the tab it is on and opens the
+folder it is on in a new one — and Alt-click marks a row.
+
 Files can be marked with `Space` and copied, moved or deleted in bulk. `E` opens
 the marked names in your editor for a bulk rename — search and replace across
 fifty files, save, done — and `z` / `Z` zip and unzip. Directory sizes are a
@@ -85,21 +103,37 @@ Navigation
 | `Ctrl+U` / `Ctrl+D` | Half page up / down |
 | `~` | Home directory |
 | `:` | Go to path (Tab completes) |
+| `[` / `]` | Back / forward |
 | `Tab` / `Shift+Tab` | Switch panel |
+
+Tabs
+
+| Key | |
+| --- | --- |
+| `t` | New tab here |
+| `T` | Open the folder under the cursor in a new tab |
+| `w` | Close tab |
+| `Ctrl+T` | Reopen the tab just closed |
+| `{` / `}` | Previous / next tab |
+| `1` … `9` | Jump to that tab |
 
 Files
 
 | Key | |
 | --- | --- |
 | `Space` | Mark / unmark |
+| `Ctrl+A` / `*` | Mark everything / invert the marks |
 | `Esc` | Clear marks |
 | `c` / `x` / `p` | Copy / cut / paste |
+| `C` | Duplicate |
 | `d` | Delete |
 | `r` | Rename |
 | `E` | Bulk rename marked (or all) in $EDITOR |
 | `n` / `N` | New file / new directory |
 | `z` / `Z` | Zip marked entries / extract the archive |
 | `s` | Measure the size of marked directories |
+| `y` | Copy the path to the clipboard |
+| `O` / `Ctrl+O` | Open with the default app / reveal in Finder |
 | `u` / `U` | Undo / redo |
 | `Y` | Action history |
 
@@ -107,12 +141,15 @@ Search, view, system
 
 | Key | |
 | --- | --- |
+| `Ctrl+P` | Command palette: find any action |
+| `e` | Recent files and places |
 | `f` / `F` | Search by name / in contents |
 | `/` | Filter the current list |
 | `'` | Bookmark this directory |
 | `.` | Show hidden files |
 | `o n` `o s` `o d` | Sort by name / size / date |
 | `l` `-` `=` `_` `+` | Audio: play-pause, seek ±5s, seek ±30s |
+| `B` / `V` | Show or hide the sidebar / the preview |
 | `S` | Shell here |
 | `,` | Settings |
 | `?` | Help |
@@ -129,6 +166,26 @@ Git
 | `i` | Add it to .gitignore |
 | `H` / `L` | Its history / blame |
 
+## Cmd shortcuts
+
+A terminal does not normally see the Command key. The iTerm2 profile that
+[nvim-ide](nvim-ide/README.md) installs sends the Cmd combinations through as
+escape sequences, which is how they reach Neovim — and Tuiple reads the same
+sequences, so in that profile the keys mean here what they mean in the editor:
+
+| Key | |
+| --- | --- |
+| `Cmd+Shift+A` | Find action (the palette) |
+| `Cmd+E` | Recent files and places |
+| `Cmd+Shift+O` / `Cmd+Shift+F` | Go to file / find in files |
+| `Cmd+[` / `Cmd+]` | Back / forward |
+| `Cmd+F` | Filter the current list |
+| `Cmd+A` / `Cmd+D` / `Cmd+Backspace` | Select all / duplicate / delete |
+| `Cmd+Z` / `Cmd+Shift+Z` | Undo / redo |
+
+Anywhere else the plain keys above do the same job. Both spellings are ordinary
+bindings (`"cmd+e"`, `"cmd+shift+a"`), so they can be rebound like any other.
+
 ## Following you back to the shell
 
 A program cannot change its parent shell's directory, so exiting Tuiple normally
@@ -143,7 +200,9 @@ function to taste — it is four lines of shell. Under the hood it is
 `tuiple --cwd-file PATH`, which writes the final directory to a file on exit.
 
 If you want Tuiple to open in the shell's directory rather than your home, set
-`files.start_dir` to `cwd` in the settings.
+`files.start_dir` to `cwd` in the settings — or to `last`, to come back to the
+tabs of the previous session. A path on the command line always wins, and a run
+started that way leaves the saved session alone.
 
 ## Optional tools
 
@@ -168,7 +227,9 @@ Press `,` to open the settings screen — six sections, arrow keys change values
 `e` edits the text ones, `r` resets the highlighted one. Changes are written
 immediately to `~/.config/tuiple/config.json`; delete that file and the defaults
 come back. Bookmarks live next to it in `bookmarks.json`, the action log in
-`audit.jsonl`. Set `TUIPLE_CONFIG` to run against a different settings file.
+`audit.jsonl`, the recent list in `recent.json` and the open tabs in
+`session.json`. Set `TUIPLE_CONFIG` to run against a different settings file;
+the log, the recent list and the session follow it.
 
 When the editor is `nvim` with the [nvim-ide](nvim-ide/README.md) config from
 this repository, a seventh section, **Neovim**, sets up the editor itself —
@@ -193,7 +254,7 @@ The file list
 
 | | Values | |
 | --- | --- | --- |
-| `files.start_dir` | `home` `cwd` | Where `tuiple` opens when you give it no path |
+| `files.start_dir` | `home` `cwd` `last` | Where `tuiple` opens when you give it no path; `last` restores the tabs you had open |
 | `files.show_hidden` | `true` `false` | Dotfiles visible on start (`.` still toggles per session) |
 | `files.sort` | `name` `size` `date` `type` | Starting sort order |
 | `files.reverse_sort` | `true` `false` | Flip it — Z to A, smallest first, oldest first |

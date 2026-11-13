@@ -61,6 +61,10 @@ func SetFormatOptions(timeStyle string, binaryUnits bool) {
 	optMu.Unlock()
 }
 
+// SortOptions reports how directories are being ordered, for the file
+// list's column header.
+func SortOptions() (dirsFirst, reverse bool) { return sortOptions() }
+
 func sortOptions() (dirsFirst, reverse bool) {
 	optMu.RLock()
 	defer optMu.RUnlock()
@@ -292,8 +296,16 @@ func HomeDir() string {
 // ShortenPath replaces the home directory prefix with ~.
 func ShortenPath(path string) string {
 	home := HomeDir()
-	if strings.HasPrefix(path, home) {
+	// Only a whole path component counts: /Users/annabel is not inside
+	// /Users/anna, however the two strings begin.
+	if path == home || strings.HasPrefix(path, home+string(os.PathSeparator)) {
 		return "~" + path[len(home):]
 	}
 	return path
+}
+
+// IsDir reports whether path exists and is a directory.
+func IsDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

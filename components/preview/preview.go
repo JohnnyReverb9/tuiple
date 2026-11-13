@@ -90,16 +90,16 @@ type Model struct {
 	focused      bool
 
 	// Audio player state
-	audioMeta    mediarender.AudioInfo
-	audioCmd     *exec.Cmd // running afplay process
-	audioPlaying bool
-	audioStart   time.Time  // when playback started
-	audioElapsed    float64    // current position in seconds
-	audioOffset     float64    // position where current playback started
-	audioTmpFile    string     // temp file for seeked playback
-	audioWarning    string     // warning message (e.g., missing ffmpeg)
-	audioSeeking    bool       // true while ffmpeg is processing a seek
-	audioSeekTarget float64    // the target position for the current seek
+	audioMeta       mediarender.AudioInfo
+	audioCmd        *exec.Cmd // running afplay process
+	audioPlaying    bool
+	audioStart      time.Time // when playback started
+	audioElapsed    float64   // current position in seconds
+	audioOffset     float64   // position where current playback started
+	audioTmpFile    string    // temp file for seeked playback
+	audioWarning    string    // warning message (e.g., missing ffmpeg)
+	audioSeeking    bool      // true while ffmpeg is processing a seek
+	audioSeekTarget float64   // the target position for the current seek
 }
 
 // New creates an empty preview model.
@@ -107,7 +107,7 @@ func New() Model { return Model{} }
 
 // ── Size / focus setters ───────────────────────────────────────────────
 
-func (m *Model) SetSize(w, h int) { m.width = w; m.height = h }
+func (m *Model) SetSize(w, h int)  { m.width = w; m.height = h }
 func (m *Model) SetFocused(f bool) { m.focused = f }
 
 // ── LoadFile ───────────────────────────────────────────────────────────
@@ -172,9 +172,9 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 				}
 			}
 
-			// Reserve space for title + metadata + spacer
-			renderCols := max(1, previewW-2)
-			renderRows := max(1, previewH-8)
+			// Reserve the header rows and the panel's gutter.
+			renderCols := max(1, previewW-3)
+			renderRows := max(1, previewH-headerRows-1)
 
 			var content string
 			var renderErr error
@@ -227,8 +227,9 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 			}
 		}
 
-		// Text → full up to 1MB size limit
-		content := string(data)
+		// Text → full up to the size limit. The newline that ends the
+		// last line is not a line of its own.
+		content := strings.TrimSuffix(string(data), "\n")
 		return ContentLoadedMsg{
 			Path: entry.Path, Content: content,
 			Info: info,
@@ -250,16 +251,18 @@ func (m Model) loadDirImmediate(entry filesystem.FileEntry) tea.Cmd {
 		}
 		entries, _ := filesystem.ReadDir(entry.Path, false)
 		var lines []string
+		// As many names as the panel can show without scrolling.
+		limit := max(20, m.height-headerRows-1)
 		for i, e := range entries {
-			if i >= 20 {
-				lines = append(lines, fmt.Sprintf("  ... and %d more", len(entries)-20))
+			if i >= limit {
+				lines = append(lines, fmt.Sprintf("… and %d more", len(entries)-limit))
 				break
 			}
 			name := e.Name
 			if e.IsDir {
 				name += "/"
 			}
-			lines = append(lines, "  "+name)
+			lines = append(lines, name)
 		}
 		return ContentLoadedMsg{
 			Path: entry.Path, Content: strings.Join(lines, "\n"),
@@ -348,7 +351,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		
+
 		m.audioSeeking = false
 		if msg.Err != nil {
 			m.audioWarning = "ffmpeg failed to seek"
@@ -384,7 +387,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, m.audioTickCmd()
 
 	case tea.MouseMsg:
-		maxScroll := max(0, m.contentLines-max(1, m.height-7))
+		maxScroll := max(0, m.contentLines-max(1, m.height-headerRows))
 		if msg.Type == tea.MouseWheelUp {
 			if m.scrollOffset > 0 {
 				m.scrollOffset--
@@ -415,7 +418,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 
-		maxScroll := max(0, m.contentLines-max(1, m.height-7))
+		maxScroll := max(0, m.contentLines-max(1, m.height-headerRows))
 		switch msg.String() {
 		case "up", "k":
 			if m.scrollOffset > 0 {
@@ -443,6 +446,17 @@ func (m Model) IsAudio() bool {
 
 func (m Model) Path() string {
 	return m.path
+}
+
+// Clear empties the panel — for a directory with nothing in it, where
+// leaving the last file on show would be describing something else.
+func (m *Model) Clear() {
+	m.resetAudio()
+	m.path = ""
+	m.content = ""
+	m.contentLines = 0
+	m.isDir, m.isMedia, m.isAudio = false, false, false
+	m.scrollOffset = 0
 }
 
 func (m *Model) ToggleAudio() tea.Cmd {
@@ -574,51 +588,49 @@ func (m Model) audioTickCmd() tea.Cmd {
 
 // ── View ───────────────────────────────────────────────────────────────
 
+// headerRows is what the panel spends above the content: the name, one
+// line of metadata, and a blank row.
+const headerRows = 3
+
 func (m Model) View() string {
 	// One config read per frame; the setting cannot change halfway
 	// through drawing the panel.
 	showLineNumbers := config.Get().Preview.LineNumbers
 
-	if m.width <= 0 || m.path == "" {
-		return theme.Dim.Render(" No file selected")
+	// The panel keeps one empty cell on its left, so text does not sit
+	// against the separator. Everything below is laid out in what is
+	// left and shifted over at the end.
+	inner := m.width - 1
+	if inner <= 0 {
+		return ""
+	}
+	if m.path == "" {
+		return indent(padPanelLines(theme.Dim.Render("Nothing selected"), inner, m.height))
 	}
 
 	var sections []string
 
-	// Title
-	title := theme.PreviewTitle.Render(m.info.Name)
-	sections = append(sections, title)
-
-	// Metadata. For dirs whose recursive size is still being computed
-	// (sentinel -1), show "calculating..." so the user knows the value
-	// will update shortly instead of being permanently bogus.
-	sizeStr := filesystem.FormatSize(m.info.Size)
-	if m.isDir && m.info.Size < 0 {
-		sizeStr = "calculating..."
+	// Name, then the metadata on a single dim line. With the keyboard in
+	// this panel the name takes the accent colour — the panel has no
+	// cursor row to show focus with.
+	nameStyle := theme.PreviewName
+	if m.focused {
+		nameStyle = nameStyle.Foreground(theme.AccentBlue)
 	}
-	infoLines := []string{
-		theme.PreviewInfo.Render(fmt.Sprintf("Size:  %s", sizeStr)),
-		theme.PreviewInfo.Render(fmt.Sprintf("Date:  %s", m.info.ModTime)),
-		theme.PreviewInfo.Render(fmt.Sprintf("Perms: %s", m.info.Perms)),
-	}
-	if m.isDir {
-		infoLines = append(infoLines,
-			theme.PreviewInfo.Render(fmt.Sprintf("Items: %d", m.info.Items)),
-		)
-	}
-	sections = append(sections, strings.Join(infoLines, "\n"))
+	sections = append(sections, nameStyle.MaxWidth(inner).Render(m.info.Name))
+	sections = append(sections, theme.PreviewInfo.MaxWidth(inner).Render(m.metaLine()))
 	sections = append(sections, "") // spacer
 
 	// ── Audio player UI ────────────────────────────────────────────
 	if m.isAudio {
 		sections = append(sections, m.renderAudioPlayer()...)
-		return strings.Join(sections, "\n")
+		return indent(padPanelLines(strings.Join(sections, "\n"), inner, m.height))
 	}
 
 	// Content (scrollable)
 	if m.content != "" {
 		lines := strings.Split(m.content, "\n")
-		availH := max(1, m.height-7) // reserve space for title+info+spacer
+		availH := max(1, m.height-headerRows)
 
 		// Clamp scroll efficiently to prevent jitter
 		maxScroll := max(0, len(lines)-availH)
@@ -629,6 +641,10 @@ func (m Model) View() string {
 
 		end := min(start+availH, len(lines))
 
+		// The gutter is as wide as the last line number needs, and no
+		// wider: four cells for a twelve-line file is three wasted.
+		numW := len(fmt.Sprintf("%d", len(lines)))
+
 		if start < len(lines) {
 			visible := make([]string, end-start)
 			for i := start; i < end; i++ {
@@ -637,25 +653,59 @@ func (m Model) View() string {
 					// Media content is already ANSI-colored half-blocks;
 					// render without line numbers to preserve alignment.
 					visible[i-start] = lines[i]
-				case !showLineNumbers:
+				case m.isDir || !showLineNumbers:
 					visible[i-start] = theme.PreviewContent.
-						MaxWidth(max(1, m.width-2)).
-						Render(lines[i])
+						MaxWidth(max(1, inner)).
+						Render(expandTabs(lines[i]))
 				default:
 					lineNum := theme.PreviewLineNum.
-						Width(4).Align(lipgloss.Right).
+						Width(numW).Align(lipgloss.Right).
 						Render(fmt.Sprintf("%d", i+1))
 					lineContent := theme.PreviewContent.
-						MaxWidth(max(1, m.width-6)).
-						Render(lines[i])
-					visible[i-start] = lineNum + " " + lineContent
+						MaxWidth(max(1, inner-numW-2)).
+						Render(expandTabs(lines[i]))
+					visible[i-start] = lineNum + "  " + lineContent
 				}
 			}
 			sections = append(sections, strings.Join(visible, "\n"))
 		}
 	}
 
-	return padPanelLines(strings.Join(sections, "\n"), m.width, m.height)
+	return indent(padPanelLines(strings.Join(sections, "\n"), inner, m.height))
+}
+
+// metaLine condenses what used to be a column of labelled rows: size,
+// modification time and permissions, plus the item count for a folder.
+func (m Model) metaLine() string {
+	sizeStr := filesystem.FormatSize(m.info.Size)
+	if m.isDir && m.info.Size < 0 {
+		// Sentinel: the recursive walk is still running.
+		sizeStr = "measuring…"
+	}
+	parts := []string{sizeStr, m.info.ModTime, m.info.Perms}
+	if m.isDir {
+		items := fmt.Sprintf("%d items", m.info.Items)
+		if m.info.Items == 1 {
+			items = "1 item"
+		}
+		parts = append([]string{items}, parts...)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// expandTabs replaces tabs with spaces. A terminal moves to the next tab
+// stop wherever the cursor happens to be, which lipgloss cannot measure;
+// left alone, an indented line would overrun the panel.
+func expandTabs(s string) string {
+	if !strings.Contains(s, "\t") {
+		return s
+	}
+	return strings.ReplaceAll(s, "\t", "    ")
+}
+
+// indent shifts a block one cell to the right — the panel's gutter.
+func indent(s string) string {
+	return " " + strings.ReplaceAll(s, "\n", "\n ")
 }
 
 // padPanelLines normalises a panel's output so every terminal row is exactly

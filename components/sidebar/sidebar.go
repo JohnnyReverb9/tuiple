@@ -40,6 +40,10 @@ type Model struct {
 	focused  bool
 	width    int
 	height   int
+
+	// current is the directory the file list is showing. The entry that
+	// leads there is drawn as "you are here", whatever the cursor is on.
+	current string
 }
 
 // New creates a sidebar populated with system locations.
@@ -100,7 +104,72 @@ func filterExisting(items []item) []item {
 // ── Size / focus setters ───────────────────────────────────────────────
 
 func (m *Model) SetSize(w, h int) { m.width = w; m.height = h }
-func (m *Model) SetFocused(f bool) { m.focused = f }
+
+// SetFocused gives or takes the keyboard. Arriving in the sidebar starts
+// the cursor on the place you already are, so the first j or k moves
+// relative to something meaningful.
+func (m *Model) SetFocused(f bool) {
+	if f && !m.focused {
+		if idx, ok := m.indexOf(m.current); ok {
+			m.cursor = idx
+		}
+	}
+	m.focused = f
+}
+
+// SetCurrent tells the sidebar which directory is open.
+func (m *Model) SetCurrent(path string) { m.current = path }
+
+// WithStateOf carries the cursor and focus over to a freshly built
+// sidebar — New is how the list of bookmarks is re-read.
+func (m Model) WithStateOf(old Model) Model {
+	m.focused = old.focused
+	m.current = old.current
+	m.cursor = min(old.cursor, max(0, m.totalItems()-1))
+	return m
+}
+
+// ItemAt maps a row of the panel to the destination drawn on it.
+func (m Model) ItemAt(row int) (idx int, path string, ok bool) {
+	line, flat := 0, 0
+	for si, s := range m.sections {
+		if si > 0 {
+			line++ // blank row between sections
+		}
+		line++ // section title
+		for _, it := range s.items {
+			if line == row {
+				return flat, it.path, true
+			}
+			line++
+			flat++
+		}
+	}
+	return 0, "", false
+}
+
+// SetCursor moves the cursor to an entry, as a click does.
+func (m *Model) SetCursor(idx int) {
+	if idx >= 0 && idx < m.totalItems() {
+		m.cursor = idx
+	}
+}
+
+func (m Model) indexOf(path string) (int, bool) {
+	if path == "" {
+		return 0, false
+	}
+	flat := 0
+	for _, s := range m.sections {
+		for _, it := range s.items {
+			if it.path == path {
+				return flat, true
+			}
+			flat++
+		}
+	}
+	return 0, false
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -184,14 +253,16 @@ func (m Model) View() string {
 			// Pad to fill row
 			padded := name + strings.Repeat(" ", max(0, m.width-2-lipgloss.Width(name)))
 
-			var style lipgloss.Style
-			switch {
-			case flatIdx == m.cursor && m.focused:
-				style = theme.SidebarActive
-			case flatIdx == m.cursor:
+			// Two things can be true of a row: the keyboard cursor is on
+			// it, and it is where the file list currently is. The first
+			// is a background (and only while the sidebar has focus —
+			// otherwise it is noise), the second a colour.
+			style := theme.SidebarItem
+			if it.path == m.current {
 				style = theme.SidebarSelected
-			default:
-				style = theme.SidebarItem
+			}
+			if flatIdx == m.cursor && m.focused {
+				style = style.Background(theme.BgSelected).Bold(true)
 			}
 
 			lines = append(lines, " "+style.Render(padded))

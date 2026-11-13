@@ -14,17 +14,24 @@ import (
 // never touch the settings of whoever runs them.
 func tempConfig(t *testing.T, apply func(*config.Config)) {
 	t.Helper()
+	// Registered first, so it runs last — after t.Setenv has put the
+	// variable back to the package-wide throwaway path set in TestMain.
+	// Load alone would keep this test's settings in memory (a missing
+	// file leaves them untouched), hence the reset.
+	t.Cleanup(func() {
+		_ = config.Load()
+		_ = config.Reset()
+	})
 	t.Setenv("TUIPLE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	if err := config.Load(); err != nil {
 		t.Fatalf("load: %v", err)
 	}
+	if err := config.Reset(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
 	if err := config.Update(apply); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	t.Cleanup(func() {
-		t.Setenv("TUIPLE_CONFIG", "")
-		_ = config.Load()
-	})
 }
 
 // Pasting onto a name that is already taken is the one file operation

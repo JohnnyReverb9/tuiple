@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/JohnnyReverb9/tuiple/filesystem"
+	"github.com/JohnnyReverb9/tuiple/keys"
 )
 
 // fixture builds a directory with two files and a subdirectory holding
@@ -207,4 +208,158 @@ func TestRowsNeverOverflowTheirColumns(t *testing.T) {
 		}
 	}
 	filesystem.SetFormatOptions("short", true)
+}
+
+// Back and Forward walk the history without growing it, and each stop
+// remembers which entry the cursor was on.
+func TestBackAndForward(t *testing.T) {
+	root := fixture(t)
+	sub := filepath.Join(root, "sub")
+	m := New(root)
+	m.SetSize(80, 20)
+
+	if m.CanGoBack() || m.CanGoForward() {
+		t.Fatal("a fresh list should have no history")
+	}
+
+	m, cmd := m.NavigateTo(sub)
+	m = deliver(t, m, cmd)
+	if !m.CanGoBack() || m.CanGoForward() {
+		t.Fatalf("after navigating: back=%v forward=%v, want true/false", m.CanGoBack(), m.CanGoForward())
+	}
+
+	m, cmd = m.Back()
+	m = deliver(t, m, cmd)
+	if m.CurrentPath() != root {
+		t.Fatalf("Back went to %q, want %q", m.CurrentPath(), root)
+	}
+	if !m.CanGoForward() {
+		t.Error("Back should leave somewhere to go forward to")
+	}
+
+	m, cmd = m.Forward()
+	m = deliver(t, m, cmd)
+	if m.CurrentPath() != sub {
+		t.Fatalf("Forward went to %q, want %q", m.CurrentPath(), sub)
+	}
+	if m.CanGoForward() {
+		t.Error("Forward should have used the forward history up")
+	}
+
+	// Going somewhere new from the middle of the history drops what was
+	// ahead, as a browser does.
+	m, cmd = m.Back()
+	m = deliver(t, m, cmd)
+	m, cmd = m.NavigateTo(sub)
+	m = deliver(t, m, cmd)
+	if m.CanGoForward() {
+		t.Error("navigating should clear the forward history")
+	}
+}
+
+// Parent means the enclosing directory, whatever the history says: a
+// jump from somewhere unrelated must not turn "up" into "back".
+func TestGoUpIsTheParentNotTheHistory(t *testing.T) {
+	root := fixture(t)
+	elsewhere := t.TempDir()
+	sub := filepath.Join(root, "sub")
+
+	m := New(elsewhere)
+	m.SetSize(80, 20)
+	m, cmd := m.NavigateTo(sub) // as a bookmark or a search result would
+	m = deliver(t, m, cmd)
+
+	m, cmd = m.goUp()
+	m = deliver(t, m, cmd)
+	if m.CurrentPath() != root {
+		t.Fatalf("up from %q went to %q, want its parent %q", sub, m.CurrentPath(), root)
+	}
+	if e := m.SelectedEntry(); e == nil || e.Name != "sub" {
+		t.Errorf("cursor is on %v, want the directory just left", e)
+	}
+
+	// And it is a navigation like any other: Back leads into the child.
+	m, cmd = m.Back()
+	m = deliver(t, m, cmd)
+	if m.CurrentPath() != sub {
+		t.Errorf("Back after going up went to %q, want %q", m.CurrentPath(), sub)
+	}
+}
+
+// Marks are made in a directory and stay there. Carried along, they
+// would make the bulk operations act on rows that are not on screen.
+func TestMarksDoNotFollowNavigation(t *testing.T) {
+	root := fixture(t)
+	m := New(root)
+	m.SetSize(80, 20)
+
+	m, _ = m.Do(keys.SelectAll)
+	if got := m.MarkedCount(); got != 3 {
+		t.Fatalf("select all marked %d entries, want 3", got)
+	}
+	m, _ = m.Do(keys.InvertMarks)
+	if got := m.MarkedCount(); got != 0 {
+		t.Fatalf("inverting a full selection left %d marked, want 0", got)
+	}
+
+	m, _ = m.Do(keys.SelectAll)
+	m, cmd := m.NavigateTo(filepath.Join(root, "sub"))
+	m = deliver(t, m, cmd)
+	if got := m.MarkedCount(); got != 0 {
+		t.Errorf("%d marks survived a change of directory", got)
+	}
+}
+
+// With tabs several lists are alive at once. A read finishing for one of
+// them must not be taken for the answer to another's, even when both
+// are showing the same directory.
+func TestLoadFromAnotherListIsIgnored(t *testing.T) {
+	root := fixture(t)
+	a := New(root)
+	b := a.Spawn(root)
+	if a.ID() == b.ID() {
+		t.Fatal("two lists share an id")
+	}
+
+	_, cmd := a.Update(RefreshListMsg{})
+	loaded := cmd().(EntriesLoadedMsg)
+
+	// Make the result recognisable, then offer it to the wrong list.
+	loaded.Entries = nil
+	loaded.Token = b.loadToken
+	b, _ = b.Update(loaded)
+	if len(b.Entries()) != 3 {
+		t.Errorf("list b took a read addressed to list a: %d entries, want 3", len(b.Entries()))
+	}
+}
+
+// A click is turned into a row with EntryAt and into a sort order with
+// SortAt; both have to agree with what is actually drawn.
+func TestMouseHitTesting(t *testing.T) {
+	m := New(fixture(t))
+	m.SetSize(80, 20)
+
+	if _, ok := m.EntryAt(0); ok {
+		t.Error("row 0 is the header, not an entry")
+	}
+	if idx, ok := m.EntryAt(1); !ok || idx != 0 {
+		t.Errorf("row 1 = entry %d (ok=%v), want entry 0", idx, ok)
+	}
+	if _, ok := m.EntryAt(4); ok {
+		t.Error("a row below the last entry should hit nothing")
+	}
+
+	header := m.renderHeader()
+	for label, want := range map[string]filesystem.SortMode{
+		"Name":     filesystem.SortByName,
+		"Size":     filesystem.SortBySize,
+		"Modified": filesystem.SortByDate,
+	} {
+		// Columns are counted in cells; the header is plain ASCII up to
+		// each label once the styling is stripped.
+		x := lipgloss.Width(header[:strings.Index(header, label)]) + 1
+		if got := m.SortAt(x); got != want {
+			t.Errorf("a click on %q sorts by %v, want %v", label, got, want)
+		}
+	}
 }

@@ -84,3 +84,61 @@ func TestHelpRendering(t *testing.T) {
 		}
 	}
 }
+
+// Global keys are matched before the file list gets a look, so a key
+// bound in both scopes would make the list's binding unreachable — and
+// the per-scope check above would not notice.
+func TestNoKeyIsShadowedAcrossScopes(t *testing.T) {
+	global := make(map[string]Action)
+	for _, b := range Defaults {
+		if b.Scope == ScopeGlobal {
+			for _, k := range b.Keys {
+				global[k] = b.Action
+			}
+		}
+	}
+	for _, b := range Defaults {
+		if b.Scope != ScopeList {
+			continue
+		}
+		for _, k := range b.Keys {
+			if owner, taken := global[k]; taken {
+				t.Errorf("key %q of %q is shadowed by the global action %q", k, b.Action, owner)
+			}
+		}
+	}
+}
+
+func TestPretty(t *testing.T) {
+	for key, want := range map[string]string{
+		"t":             "t",
+		" ":             "Space",
+		"ctrl+p":        "Ctrl+P",
+		"shift+tab":     "Shift+Tab",
+		"cmd+e":         "⌘E",
+		"cmd+shift+a":   "⇧⌘A",
+		"cmd+alt+left":  "⌥⌘←",
+		"cmd+backspace": "⌘⌫",
+		"cmd+[":         "⌘[",
+		"+":             "+",
+	} {
+		if got := Pretty(key); got != want {
+			t.Errorf("Pretty(%q) = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// Rebinding an action must also retire the hand-written help label that
+// described its default keys.
+func TestOverrideDropsTheStaleHelpLabel(t *testing.T) {
+	t.Cleanup(func() { SetOverrides(nil) })
+
+	SetOverrides(map[string][]string{string(HalfPageUp): {"ctrl+b"}})
+	b, ok := Find(HalfPageUp)
+	if !ok {
+		t.Fatal("binding not found")
+	}
+	if got := b.Display(); got != "Ctrl+B" {
+		t.Errorf("help shows %q for the rebound action, want Ctrl+B", got)
+	}
+}

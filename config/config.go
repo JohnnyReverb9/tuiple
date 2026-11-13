@@ -48,6 +48,9 @@ type StartDir string
 const (
 	StartInHome StartDir = "home"
 	StartInCwd  StartDir = "cwd"
+	// StartWithLast reopens the tabs of the previous session, the way an
+	// IDE comes back with the projects you had open.
+	StartWithLast StartDir = "last"
 )
 
 // PasteConflict decides what happens when a pasted name is taken.
@@ -361,7 +364,7 @@ func sanitize(c *Config) {
 	c.Delete.TimerSeconds = clamp(c.Delete.TimerSeconds, 3, 600)
 
 	switch c.Files.StartDir {
-	case StartInHome, StartInCwd:
+	case StartInHome, StartInCwd, StartWithLast:
 	default:
 		c.Files.StartDir = StartInHome
 	}

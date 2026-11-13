@@ -8,7 +8,7 @@ import "github.com/charmbracelet/lipgloss"
 // Icon pairs a display symbol with a terminal color.
 type Icon struct {
 	Symbol string
-	Color  lipgloss.Color
+	Color  lipgloss.AdaptiveColor
 }
 
 // Render returns the icon symbol with its color applied.
@@ -17,25 +17,42 @@ func (i Icon) Render() string {
 }
 
 // ── Predefined icons ───────────────────────────────────────────────────
+//
+// Each colour comes as a pair. The dark half is the Tokyo Night accent
+// the icons have always had; on a white background those pastels wash
+// out to nothing, so the light half is the same hue taken a good deal
+// deeper.
+
+func tint(light, dark string) lipgloss.AdaptiveColor {
+	return lipgloss.AdaptiveColor{Light: light, Dark: dark}
+}
 
 var (
-	DirIcon     = Icon{"▸", lipgloss.Color("#7aa2f7")}
-	FileDefault = Icon{"·", lipgloss.Color("#a9b1d6")}
-	FileText    = Icon{"≡", lipgloss.Color("#a9b1d6")}
-	FileCode    = Icon{"◇", lipgloss.Color("#9ece6a")}
-	FileConfig  = Icon{"◈", lipgloss.Color("#e0af68")}
-	FileImage   = Icon{"◉", lipgloss.Color("#bb9af7")}
-	FileVideo   = Icon{"▶", lipgloss.Color("#f7768e")}
-	FileAudio   = Icon{"♪", lipgloss.Color("#2ac3de")}
-	FileArchive = Icon{"◆", lipgloss.Color("#f7768e")}
-	FileExec    = Icon{"*", lipgloss.Color("#9ece6a")}
-	FileLink    = Icon{"→", lipgloss.Color("#2ac3de")}
-	FileGit     = Icon{"●", lipgloss.Color("#f7768e")}
-	FileMD      = Icon{"¶", lipgloss.Color("#7aa2f7")}
-	FilePDF     = Icon{"□", lipgloss.Color("#f7768e")}
-	FileDB      = Icon{"⊞", lipgloss.Color("#e0af68")}
-	FileLock    = Icon{"▣", lipgloss.Color("#f7768e")}
-	FileJSON    = Icon{"{", lipgloss.Color("#e0af68")}
+	blue   = tint("#2563eb", "#7aa2f7")
+	slate  = tint("#64748b", "#a9b1d6")
+	green  = tint("#15803d", "#9ece6a")
+	amber  = tint("#b45309", "#e0af68")
+	violet = tint("#7e22ce", "#bb9af7")
+	rose   = tint("#be123c", "#f7768e")
+	cyan   = tint("#0e7490", "#2ac3de")
+
+	DirIcon     = Icon{"▸", blue}
+	FileDefault = Icon{"·", slate}
+	FileText    = Icon{"≡", slate}
+	FileCode    = Icon{"◇", green}
+	FileConfig  = Icon{"◈", amber}
+	FileImage   = Icon{"◉", violet}
+	FileVideo   = Icon{"▶", rose}
+	FileAudio   = Icon{"♪", cyan}
+	FileArchive = Icon{"◆", rose}
+	FileExec    = Icon{"*", green}
+	FileLink    = Icon{"→", cyan}
+	FileGit     = Icon{"●", rose}
+	FileMD      = Icon{"¶", blue}
+	FilePDF     = Icon{"□", rose}
+	FileDB      = Icon{"⊞", amber}
+	FileLock    = Icon{"▣", rose}
+	FileJSON    = Icon{"{", amber}
 )
 
 // ── Extension → Icon mapping ───────────────────────────────────────────
@@ -95,31 +112,31 @@ var extMap = map[string]Icon{
 // ── Filename → Icon mapping ────────────────────────────────────────────
 
 var nameMap = map[string]Icon{
-	"Makefile":              FileConfig,
-	"Dockerfile":           FileConfig,
-	"docker-compose.yml":   FileConfig,
-	"docker-compose.yaml":  FileConfig,
-	".gitignore":           FileGit,
-	".gitmodules":          FileGit,
-	".gitattributes":       FileGit,
-	"go.mod":               FileConfig,
-	"go.sum":               FileLock,
-	"package.json":         FileJSON,
-	"package-lock.json":    FileLock,
-	"tsconfig.json":        FileJSON,
-	"Cargo.toml":           FileConfig,
-	"Cargo.lock":           FileLock,
-	"LICENSE":              FileText,
-	"README":               FileMD,
-	"README.md":            FileMD,
-	"CHANGELOG":            FileText,
-	"CHANGELOG.md":         FileMD,
-	".env":                 FileConfig,
-	".env.local":           FileConfig,
-	".dockerignore":        FileConfig,
-	".editorconfig":        FileConfig,
-	"flake.nix":            FileConfig,
-	"flake.lock":           FileLock,
+	"Makefile":            FileConfig,
+	"Dockerfile":          FileConfig,
+	"docker-compose.yml":  FileConfig,
+	"docker-compose.yaml": FileConfig,
+	".gitignore":          FileGit,
+	".gitmodules":         FileGit,
+	".gitattributes":      FileGit,
+	"go.mod":              FileConfig,
+	"go.sum":              FileLock,
+	"package.json":        FileJSON,
+	"package-lock.json":   FileLock,
+	"tsconfig.json":       FileJSON,
+	"Cargo.toml":          FileConfig,
+	"Cargo.lock":          FileLock,
+	"LICENSE":             FileText,
+	"README":              FileMD,
+	"README.md":           FileMD,
+	"CHANGELOG":           FileText,
+	"CHANGELOG.md":        FileMD,
+	".env":                FileConfig,
+	".env.local":          FileConfig,
+	".dockerignore":       FileConfig,
+	".editorconfig":       FileConfig,
+	"flake.nix":           FileConfig,
+	"flake.lock":          FileLock,
 }
 
 // GetIcon returns the appropriate icon for a file entry.

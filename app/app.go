@@ -14,10 +14,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/JohnnyReverb9/tuiple/bookmarks"
 	"github.com/JohnnyReverb9/tuiple/clipboard"
 	"github.com/JohnnyReverb9/tuiple/components/filelist"
 	"github.com/JohnnyReverb9/tuiple/components/git"
+	"github.com/JohnnyReverb9/tuiple/components/picker"
 	"github.com/JohnnyReverb9/tuiple/components/preview"
 	"github.com/JohnnyReverb9/tuiple/components/preview/mediarender"
 	"github.com/JohnnyReverb9/tuiple/components/search"
@@ -80,16 +80,32 @@ func (m *Model) refreshGit() {
 	if err != nil {
 		m.gitRoot = ""
 		m.gitBranch = ""
+		m.gitAhead, m.gitBehind = 0, 0
 		m.gitFileStat = nil
 		m.gitDirHas = nil
 		m.filelist.SetGitState(nil, nil)
 		return
 	}
+	prevRoot, prevBranch := m.gitRoot, m.gitBranch
 	m.gitRoot = root
 	if br, err := git.CurrentBranch(root); err == nil {
 		m.gitBranch = br
 	} else {
 		m.gitBranch = ""
+	}
+	// Arriving in a repository is arriving at a project, and projects
+	// are what the recent list is for.
+	if root != prevRoot {
+		TouchRecent(root, true)
+	}
+	// How far the branch is from its upstream costs two more git calls
+	// and only changes on a commit, fetch or push — so it is re-read when
+	// the branch changes and otherwise every few seconds, not every poll.
+	if root != prevRoot || m.gitBranch != prevBranch || time.Since(m.lastTracking) > 5*time.Second {
+		m.lastTracking = time.Now()
+		if info, err := git.Tracking(root); err == nil {
+			m.gitAhead, m.gitBehind = info.Ahead, info.Behind
+		}
 	}
 	changes, _ := git.Status(root)
 	fileStat := make(map[string]string, len(changes))
@@ -147,8 +163,16 @@ const (
 // Model is the root application model.
 type Model struct {
 	sidebar  sidebar.Model
-	filelist filelist.Model
+	filelist filelist.Model // the active tab's list — see tabs.go
 	preview  preview.Model
+
+	// tabs holds one file list per tab. The entry at tabIdx is stale
+	// while that tab is in front: its live copy is filelist above.
+	tabs       []filelist.Model
+	tabIdx     int
+	closedTabs []string // directories of closed tabs, for reopening
+
+	picker picker.Model // command palette / recent places
 
 	textInput  textinput.Model
 	dialogMode DialogMode
@@ -166,6 +190,9 @@ type Model struct {
 
 	gitRoot        string
 	gitBranch      string
+	gitAhead       int // commits the branch is ahead of its upstream
+	gitBehind      int
+	lastTracking   time.Time
 	gitFileStat    map[string]string
 	gitDirHas      map[string]struct{}
 	gitDiscardPath string // abs path pending discard confirmation
@@ -189,7 +216,7 @@ type Model struct {
 	height int
 
 	showHelp   bool
-	helpTabIdx int // 0 = System, 1 = Git
+	helpTabIdx int // 0 = Navigate, 1 = Files, 2 = Git
 	ready      bool
 
 	// cyrillicActive remembers whether the last letter typed came from a
@@ -198,10 +225,43 @@ type Model struct {
 	cyrillicActive bool
 
 	lastDirMod time.Time
+
+	// statusAt is when statusMsg last changed; a message that has been
+	// read does not need to stay on screen until the next one.
+	statusAt time.Time
+
+	// Free space on the current volume, for the status bar.
+	diskFree   int64
+	diskFreeOK bool
+
+	// sessionDirty is set when the open tabs changed and cleared when
+	// they have been written to disk.
+	sessionDirty bool
+	// sessionOff is set for a run started on an explicit path. Such a
+	// run is a one-off look at one directory; letting it overwrite the
+	// saved session would throw away the tabs of the real one.
+	sessionOff bool
+
+	// lastClick is the previous mouse press on a list row, for telling a
+	// double click from two single ones.
+	lastClick click
 }
 
-// New creates the application model.
+// New creates the application model with a single tab.
 func New(startDir string) Model {
+	return NewWithTabs([]string{startDir}, 0)
+}
+
+// NewWithTabs creates the application model with one tab per directory
+// and the given one in front — how a saved session comes back.
+func NewWithTabs(dirs []string, active int) Model {
+	if len(dirs) == 0 {
+		dirs = []string{filesystem.HomeDir()}
+	}
+	if active < 0 || active >= len(dirs) {
+		active = 0
+	}
+
 	ti := textinput.New()
 	ti.Prompt = "❯ "
 	ti.CharLimit = 255
@@ -209,15 +269,24 @@ func New(startDir string) Model {
 	ti.PlaceholderStyle = theme.Dim
 	ti.TextStyle = theme.Normal
 
+	tabs := make([]filelist.Model, len(dirs))
+	for i, dir := range dirs {
+		tabs[i] = filelist.New(dir)
+	}
+	startDir := dirs[active]
+
 	var lastMod time.Time
 	if info, err := os.Stat(startDir); err == nil {
 		lastMod = info.ModTime()
 	}
 
-	return Model{
+	m := Model{
 		sidebar:          sidebar.New(),
-		filelist:         filelist.New(startDir),
+		filelist:         tabs[active],
+		tabs:             tabs,
+		tabIdx:           active,
 		preview:          preview.New(),
+		picker:           picker.New(),
 		textInput:        ti,
 		searchOverlay:    search.New(),
 		gitOverlay:       git.New(),
@@ -230,6 +299,9 @@ func New(startDir string) Model {
 		currentPath:      startDir,
 		lastDirMod:       lastMod,
 	}
+	m.sidebar.SetCurrent(startDir)
+	m.refreshDisk()
+	return m
 }
 
 // WithExitCwdFile arranges for the directory tuiple exits in to be
@@ -237,6 +309,13 @@ func New(startDir string) Model {
 // so the shell wrapper printed by --shell-init reads this file instead.
 func (m Model) WithExitCwdFile(path string) Model {
 	m.exitCwdFile = path
+	return m
+}
+
+// WithoutSession stops this run from saving its tabs as the session to
+// restore next time.
+func (m Model) WithoutSession() Model {
+	m.sessionOff = true
 	return m
 }
 
@@ -263,7 +342,47 @@ func (m Model) Init() tea.Cmd {
 
 // ── Update ─────────────────────────────────────────────────────────────
 
+// statusLifetime is how long a status message stays up. Long enough to
+// read, short enough that the bar is not still announcing a copy made
+// ten minutes ago.
+const statusLifetime = 6 * time.Second
+
+// Update is the Bubble Tea entry point. The work happens in update; this
+// wrapper does the two things that must hold after any message at all,
+// whichever of the many return paths handled it: the status message is
+// timestamped when it changes, and the sidebar knows where the list is.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	prevStatus := m.statusMsg
+	next, cmd := m.update(msg)
+	model, ok := next.(Model)
+	if !ok {
+		return next, cmd
+	}
+	if model.statusMsg != prevStatus {
+		model.statusAt = time.Now()
+	}
+	model.sidebar.SetCurrent(model.currentPath)
+	return model, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// A Cmd shortcut sent by the terminal as an escape sequence. It asks
+	// for an action directly, so it only applies while the panels have
+	// the keyboard — a popup or a prompt is reading its own keys.
+	if chord, ok := chordFromMsg(msg); ok {
+		if m.modalActive() || m.showHelp {
+			return m, nil
+		}
+		if action, bound := keys.Match(keys.ScopeGlobal, chord); bound {
+			next, cmd, _ := m.runGlobal(action, chord)
+			return next, cmd
+		}
+		if action, bound := keys.Match(keys.ScopeList, chord); bound {
+			return m.runList(action)
+		}
+		return m, nil
+	}
+
 	// Translate Cyrillic keystrokes into their QWERTY equivalents before
 	// anything gets to look at them — unless some part of the UI is
 	// reading text, in which case the keystrokes are content, not
@@ -302,6 +421,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if _, ok := msg.(dirPollMsg); ok {
 		var pollCmds []tea.Cmd
+		// The once-a-second tick doubles as the housekeeping clock.
+		if m.statusMsg != "" && !m.awaitingSort && time.Since(m.statusAt) > statusLifetime {
+			m.statusMsg = ""
+		}
+		if m.sessionDirty {
+			m.saveSession()
+		}
+		m.refreshDisk()
 		if info, err := os.Stat(m.currentPath); err == nil {
 			if info.ModTime().After(m.lastDirMod) {
 				m.lastDirMod = info.ModTime()
@@ -337,6 +464,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(git.BranchesChangedMsg); ok {
 		m.refreshGit()
 		return m, nil
+	}
+
+	// ── Intercept the picker (palette / recent) ────────────────────
+	if m.picker.IsActive() {
+		var cmd tea.Cmd
+		m.picker, cmd = m.picker.Update(msg)
+		return m, cmd
+	}
+	if chosen, ok := msg.(picker.ChosenMsg); ok {
+		return m.picked(chosen)
 	}
 
 	// ── Intercept Settings Popup ───────────────────────────────────
@@ -418,31 +555,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	// ── Mouse Router ───────────────────────────────────────────────
+	// ── Mouse ──────────────────────────────────────────────────────
 	case tea.MouseMsg:
-		if msg.Type != tea.MouseWheelUp && msg.Type != tea.MouseWheelDown {
-			// Ignore hover/motion events to prevent application freeze/flood
+		if m.showHelp {
 			return m, nil
 		}
-		sidebarW, filelistW, _ := m.panelWidths()
-		if msg.X > sidebarW+filelistW+1 {
-			// Hover over Preview
-			m.preview, _ = m.preview.Update(msg)
-		} else if msg.X > sidebarW {
-			// Hover over Filelist
-			prevCursor := m.filelist.CursorIdx()
-			m.filelist, _ = m.filelist.Update(msg)
-			if m.filelist.CursorIdx() != prevCursor {
-				m.currentPath = m.filelist.CurrentPath()
-				if entry := m.filelist.SelectedEntry(); entry != nil {
-					cmds = append(cmds, m.preview.LoadFile(*entry))
-				}
-			}
-		} else {
-			// Hover over Sidebar
-			m.sidebar, _ = m.sidebar.Update(msg)
-		}
-		return m, tea.Batch(cmds...)
+		return m.handleMouse(msg)
 
 	// ── Resize ─────────────────────────────────────────────────────
 	case tea.WindowSizeMsg:
@@ -468,13 +586,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "?", "esc", "q":
 				m.showHelp = false
 			case "tab", "right", "l":
-				m.helpTabIdx = (m.helpTabIdx + 1) % 2
+				m.helpTabIdx = (m.helpTabIdx + 1) % helpTabCount
 			case "shift+tab", "left", "h":
-				m.helpTabIdx = (m.helpTabIdx + 2 - 1) % 2
-			case "1":
-				m.helpTabIdx = 0
-			case "2":
-				m.helpTabIdx = 1
+				m.helpTabIdx = (m.helpTabIdx + helpTabCount - 1) % helpTabCount
+			case "1", "2", "3":
+				m.helpTabIdx = int(msg.String()[0] - '1')
 			}
 			return m, nil
 		}
@@ -491,123 +607,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// binding is written down once and both the help screen and the
 		// user's overrides read the same table.
 		if action, bound := keys.Match(keys.ScopeGlobal, msg.String()); bound {
-			switch action {
-			case keys.Quit:
-				CleanupPendingDeletes()
-				m.writeExitCwd()
-				return m, tea.Quit
-			// The audio seeks fall through to the panel when nothing is
-			// playing, so - and = keep whatever meaning they have there.
-			case keys.SeekBack:
-				if m.preview.IsAudio() {
-					return m, m.preview.SeekAudio(-5)
-				}
-			case keys.SeekForward:
-				if m.preview.IsAudio() {
-					return m, m.preview.SeekAudio(5)
-				}
-			case keys.SeekBackFar:
-				if m.preview.IsAudio() {
-					return m, m.preview.SeekAudio(-30)
-				}
-			case keys.SeekFwdFar:
-				if m.preview.IsAudio() {
-					return m, m.preview.SeekAudio(30)
-				}
-			case keys.PanelNext:
-				m.cyclePanel(1)
-				m.updateFocus()
-				return m, nil
-			case keys.PanelPrev:
-				m.cyclePanel(-1)
-				m.updateFocus()
-				return m, nil
-			case keys.Help:
-				m.showHelp = !m.showHelp
-				return m, nil
-			case keys.GoToPath:
-				m.dialogMode = DialogGoToPath
-				m.textInput.SetValue("")
-				m.textInput.Placeholder = "Enter path..."
-				m.textInput.Focus()
-				return m, nil
-			case keys.History:
-				m.historyPopup.Start()
-				return m, nil
-			case keys.Settings:
-				m.settingsPopup.Start()
-				return m, nil
-			case keys.SearchName:
-				return m, m.searchOverlay.Start(search.ModeNameSearch, m.currentPath)
-			case keys.SearchContent:
-				return m, m.searchOverlay.Start(search.ModeContentSearch, m.currentPath)
-			case keys.GitPanel:
-				if !config.Get().Git.Enabled {
-					m.statusMsg = "git integration is off — press , to turn it back on"
-					return m, nil
-				}
-				return m, m.gitOverlay.Start(m.currentPath)
-			case keys.Branches:
-				if !config.Get().Git.Enabled {
-					m.statusMsg = "git integration is off — press , to turn it back on"
-					return m, nil
-				}
-				return m, m.branchesPopup.Start(m.currentPath)
-			case keys.Bookmark:
-				added, err := bookmarks.Toggle(m.currentPath)
-				if err != nil {
-					m.statusMsg = "Error saving bookmark: " + err.Error()
-				} else {
-					if added {
-						m.statusMsg = "Added to favorites"
-					} else {
-						m.statusMsg = "Removed from favorites"
-					}
-					m.sidebar = sidebar.New() // Reload sidebar to show updated favorites
-					m.updateSizes()
-				}
-				return m, nil
-			case keys.SortMenu:
-				m.awaitingSort = true
-				m.statusMsg = "Sort by: (n)ame, (s)ize, (d)ate"
-				return m, nil
-			case keys.Shell:
-				cmd := exec.Command(config.Get().Shell())
-				cmd.Dir = m.currentPath
-				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-					return filelist.RefreshListMsg{}
-				})
-			case keys.Undo:
-				undoMsg, err := Undo()
-				if err != nil {
-					m.statusMsg = "Error: " + err.Error()
-				} else {
-					m.statusMsg = undoMsg
-					cmds = append(cmds, m.listCmd(filelist.RefreshListMsg{}))
-				}
-				if ActiveDeletesCount() > 0 && !m.deletesTicking {
-					m.deletesTicking = true
-					cmds = append(cmds, deleteTick())
-				}
-				return m, tea.Batch(cmds...)
-			case keys.Redo:
-				redoMsg, err := Redo()
-				if err != nil {
-					m.statusMsg = "Error: " + err.Error()
-				} else {
-					m.statusMsg = redoMsg
-					cmds = append(cmds, m.listCmd(filelist.RefreshListMsg{}))
-				}
-				if ActiveDeletesCount() > 0 && !m.deletesTicking {
-					m.deletesTicking = true
-					cmds = append(cmds, deleteTick())
-				}
-				return m, tea.Batch(cmds...)
+			if next, cmd, handled := m.runGlobal(action, msg.String()); handled {
+				return next, cmd
 			}
 		}
 
 	// ── Directory contents arrived (reads are asynchronous) ────────
 	case filelist.EntriesLoadedMsg:
+		// A read started by a tab that is now in the background belongs
+		// to that tab, not to whichever list is on screen.
+		if msg.ListID != m.filelist.ID() {
+			for i := range m.tabs {
+				if i != m.tabIdx && m.tabs[i].ID() == msg.ListID {
+					m.tabs[i], _ = m.tabs[i].Update(msg)
+				}
+			}
+			return m, nil
+		}
 		cmds = append(cmds, m.listCmd(msg))
 		m.currentPath = m.filelist.CurrentPath()
 		// Follow the selection with the preview, but only when it
@@ -619,8 +635,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.preview.LoadFile(*entry))
 				m.stampPreview(entry)
 			}
+		} else if msg.Err == nil && len(msg.Entries) == 0 {
+			// Nothing here to describe; do not keep describing the file
+			// the cursor was on a directory ago.
+			m.preview.Clear()
+			m.stampPreview(nil)
 		}
 		return m, tea.Batch(cmds...)
+
+	// ── Tabs and small file operations asked for by the list ───────
+	case filelist.OpenInTabMsg:
+		return m.openTab(msg.Path, "")
+	case filelist.DuplicateRequestMsg:
+		return m.duplicate(msg.Entries)
+	case filelist.CopyPathMsg:
+		return m.copyPaths(msg.Paths)
+	case filelist.OpenExternalMsg:
+		return m.openExternal(msg.Path, msg.Reveal)
 
 	// ── File Operations ────────────────────────────────────────────
 	case filelist.CopyMsg:
@@ -664,6 +695,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case filelist.OpenFileRequestMsg:
 		ext := strings.ToLower(filepath.Ext(msg.Path))
 		cfg := config.Get()
+		TouchRecent(msg.Path, false)
 
 		// Audio already loaded in the preview toggles playback instead of
 		// opening — unless the user has pointed audio at their own
@@ -871,6 +903,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── Search completed ──────────────────────────────────────────
 	case search.SearchCompletedMsg:
 		dir := filepath.Dir(msg.SelectedPath)
+		TouchRecent(msg.SelectedPath, false)
 		m.currentPath = dir
 		var listCmd tea.Cmd
 		m.filelist, listCmd = m.filelist.NavigateTo(dir)
@@ -890,6 +923,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Sidebar navigation ─────────────────────────────────────────
 	case sidebar.NavigateMsg:
+		TouchRecent(msg.Path, true)
 		m.currentPath = msg.Path
 		m.updateLastDirMod(msg.Path)
 		var cmd tea.Cmd
@@ -904,8 +938,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Dir changed in file list ───────────────────────────────────
 	case filelist.DirChangedMsg:
-		m.currentPath = msg.Path
+		// Read the path from the list rather than the message: with tabs
+		// the message may be about a list that is no longer in front.
+		m.currentPath = m.filelist.CurrentPath()
+		m.updateLastDirMod(m.currentPath)
 		m.refreshGit()
+		m.refreshDisk()
+		m.sessionDirty = true
 		if entry := m.filelist.SelectedEntry(); entry != nil {
 			cmds = append(cmds, m.preview.LoadFile(*entry))
 			m.stampPreview(entry)
@@ -954,21 +993,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	// Cursor or path changed → refresh preview
-	if m.filelist.CursorIdx() != prevCursor || m.filelist.CurrentPath() != prevPath {
-		m.currentPath = m.filelist.CurrentPath()
-		if entry := m.filelist.SelectedEntry(); entry != nil {
-			cmds = append(cmds, m.preview.LoadFile(*entry))
-			m.stampPreview(entry)
-		}
-	}
-
-	if ActiveDeletesCount() > 0 && !m.deletesTicking {
-		m.deletesTicking = true
-		cmds = append(cmds, deleteTick())
-	}
-
-	return m, tea.Batch(cmds...)
+	return m.afterListInput(prevCursor, prevPath, cmds)
 }
 
 // ── View ───────────────────────────────────────────────────────────────
@@ -1006,66 +1031,63 @@ func (m Model) View() string {
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, panels...)
 
-	// Search Overlay
+	// Popups float over the panels. Several can be open at once (the
+	// file history sits on top of the git panel); the topmost is the
+	// one drawn, and the order below is bottom to top.
+	var box string
+	atTop := false
 	if m.searchOverlay.IsActive() {
 		m.searchOverlay.SetSize(m.width/2, contentH)
-		overlay := m.searchOverlay.View()
-		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+		box = m.searchOverlay.View()
 	}
-
-	// Git Overlay
 	if m.gitOverlay.IsActive() {
 		m.gitOverlay.SetSize(m.width*4/5, contentH)
-		overlay := m.gitOverlay.View()
-		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+		box = m.gitOverlay.View()
 	}
-
-	// Branches Popup
 	if m.branchesPopup.IsActive() {
 		m.branchesPopup.SetSize(m.width*3/5, contentH*3/4)
-		overlay := m.branchesPopup.View()
-		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+		box = m.branchesPopup.View()
 	}
-
-	// File History Popup (purple border, on top of git overlay)
 	if m.fileHistoryPopup.IsActive() {
 		m.fileHistoryPopup.SetSize(m.width*4/5, contentH*4/5)
-		overlay := m.fileHistoryPopup.View()
-		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+		box = m.fileHistoryPopup.View()
 	}
-
-	// Blame Popup (orange border, on top of everything)
 	if m.blamePopup.IsActive() {
 		m.blamePopup.SetSize(m.width*4/5, contentH*4/5)
-		overlay := m.blamePopup.View()
-		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+		box = m.blamePopup.View()
 	}
-
-	// History Popup (read-only viewer over undo/redo stacks)
 	if m.historyPopup.IsActive() {
 		m.historyPopup.SetSize(m.width*4/5, contentH*4/5)
-		overlay := m.historyPopup.View()
-		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+		box = m.historyPopup.View()
 	}
-
-	// Settings Popup (cyan border, on top of everything)
 	if m.settingsPopup.IsActive() {
 		m.settingsPopup.SetSize(m.width*4/5, contentH*4/5)
-		overlay := m.settingsPopup.View()
-		content = lipgloss.Place(m.width, contentH, lipgloss.Center, lipgloss.Center, overlay)
+		box = m.settingsPopup.View()
+	}
+	if m.picker.IsActive() {
+		m.picker.SetSize(m.width, contentH)
+		box = m.picker.View()
+		// A quick-open box belongs near the top, where the eye already
+		// is, not dead centre.
+		atTop = true
+	}
+	if box != "" {
+		x, y := centred(box, m.width, contentH)
+		if atTop {
+			y = min(y, 2)
+		}
+		content = floatOver(content, box, m.width, x, y)
 	}
 
 	statusBar := m.renderStatusBar()
 
-	ui := lipgloss.JoinVertical(lipgloss.Left,
-		breadcrumb,
-		sep,
-		content,
-		sep,
-		statusBar,
-	)
+	rows := make([]string, 0, 6)
+	if m.tabBarVisible() {
+		rows = append(rows, m.renderTabBar())
+	}
+	rows = append(rows, breadcrumb, sep, content, sep, statusBar)
 
-	return ui
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 // ── Layout helpers ─────────────────────────────────────────────────────
@@ -1138,8 +1160,24 @@ func (m Model) panelWidths() (int, int, int) {
 }
 
 func (m Model) contentHeight() int {
-	// breadcrumb(1) + sep(1) + content + sep(1) + statusbar(1) = content + 4
-	return max(1, m.height-4)
+	// [tab strip] + breadcrumb + rule + content + rule + status bar
+	return max(1, m.height-m.chromeTop()-2)
+}
+
+// modalActive reports whether something other than the three panels has
+// the keyboard: a popup, a prompt in the status bar, the list filter.
+func (m Model) modalActive() bool {
+	return m.dialogMode != DialogNone ||
+		m.awaitingSort ||
+		m.filelist.IsFiltering() ||
+		m.picker.IsActive() ||
+		m.settingsPopup.IsActive() ||
+		m.historyPopup.IsActive() ||
+		m.blamePopup.IsActive() ||
+		m.fileHistoryPopup.IsActive() ||
+		m.branchesPopup.IsActive() ||
+		m.gitOverlay.IsActive() ||
+		m.searchOverlay.IsActive()
 }
 
 // ApplyGlobalConfig pushes the settings into the packages that keep
@@ -1373,6 +1411,7 @@ func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			var navDir, selectName string
+			TouchRecent(target, info.IsDir())
 			if info.IsDir() {
 				navDir = target
 			} else {
@@ -1647,32 +1686,6 @@ func (m Model) handlePaste(items []clipboard.Item, op clipboard.OpType) (tea.Mod
 	return m, m.listCmd(filelist.RefreshListMsg{})
 }
 
-// ── Breadcrumb ─────────────────────────────────────────────────────────
-
-func (m Model) renderBreadcrumb() string {
-	short := filesystem.ShortenPath(m.currentPath)
-	parts := strings.Split(short, "/")
-
-	var rendered []string
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		if i == len(parts)-1 {
-			rendered = append(rendered, theme.BreadcrumbActive.Render(part))
-		} else {
-			rendered = append(rendered, theme.BreadcrumbNormal.Render(part))
-		}
-	}
-
-	if len(rendered) == 0 {
-		rendered = append(rendered, theme.BreadcrumbActive.Render("/"))
-	}
-
-	path := strings.Join(rendered, theme.BreadcrumbSep.Render(" / "))
-	return " " + path
-}
-
 // ── Vertical separator ────────────────────────────────────────────────
 
 func (m Model) renderVSep(h int) string {
@@ -1684,66 +1697,10 @@ func (m Model) renderVSep(h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// ── Status bar ─────────────────────────────────────────────────────────
-
-func (m Model) renderStatusBar() string {
-	if m.dialogMode == DialogGitDiscard {
-		return theme.StatusBar.Width(m.width).Render(
-			fmt.Sprintf(" Discard changes to %s? (y/N) ", filepath.Base(m.gitDiscardPath)))
-	}
-	if m.dialogMode == DialogDelete {
-		title := m.opEntries[0].Name
-		if len(m.opEntries) > 1 {
-			title = fmt.Sprintf("%d items", len(m.opEntries))
-		}
-		return theme.StatusBar.Width(m.width).Render(fmt.Sprintf(" Delete %s? (y/N) ", title))
-	} else if m.dialogMode != DialogNone {
-		prefix := " Rename: "
-		switch m.dialogMode {
-		case DialogNewFile:
-			prefix = " New File: "
-		case DialogNewDir:
-			prefix = " New Dir: "
-		case DialogGoToPath:
-			prefix = " Go to: "
-		}
-		return theme.StatusBar.Width(m.width).Render(prefix + m.textInput.View())
-	}
-
-	leftStr := " " + filesystem.ShortenPath(m.currentPath)
-	if m.statusMsg != "" {
-		leftStr += "  [" + m.statusMsg + "]"
-	}
-
-	delCount := ActiveDeletesCount()
-	if delCount > 0 {
-		rem := NextDeleteRemaining()
-		leftStr += fmt.Sprintf("  [%d pending (%ds)]", delCount, int(rem.Seconds()))
-	}
-
-	left := theme.StatusPath.Render(leftStr)
-	if m.gitBranch != "" {
-		branchStyle := lipgloss.NewStyle().Foreground(theme.AccentGreen).Bold(true)
-		left += "  " + branchStyle.Render(" ["+m.gitBranch+"]")
-	}
-
-	entryCount := len(m.filelist.Entries())
-	info := fmt.Sprintf("%d items", entryCount)
-
-	if entry := m.filelist.SelectedEntry(); entry != nil {
-		info += " · " + entry.Name
-		if !entry.IsDir {
-			info += " · " + filesystem.FormatSize(entry.Size)
-		}
-	}
-
-	right := theme.StatusInfo.Render(info + " ")
-
-	gap := max(0, m.width-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", gap) + right
-}
-
 // ── Help screen ────────────────────────────────────────────────────────
+
+// helpTabCount is the number of tabs on the help screen.
+const helpTabCount = 3
 
 func (m Model) renderHelp() string {
 	type helpItem struct{ key, desc string }
@@ -1770,8 +1727,10 @@ func (m Model) renderHelp() string {
 		return out
 	}
 
-	sysLeft := fromKeymap("Navigation", "File Operations")
-	sysRight := fromKeymap("Search & Bookmarks", "Audio Player", "System & Options")
+	navLeft := fromKeymap("Navigation", "Tabs")
+	navRight := fromKeymap("Search & Bookmarks", "System & Options", "Audio Player")
+	filesLeft := fromKeymap("Selection & Clipboard", "Undo & History")
+	filesRight := fromKeymap("File Operations")
 
 	// ── Tab 1: Git ───────────────────────────────────────────────────
 	//
@@ -1856,9 +1815,12 @@ func (m Model) renderHelp() string {
 	}
 
 	var leftCats, rightCats []helpCat
-	if m.helpTabIdx == 0 {
-		leftCats, rightCats = sysLeft, sysRight
-	} else {
+	switch m.helpTabIdx {
+	case 0:
+		leftCats, rightCats = navLeft, navRight
+	case 1:
+		leftCats, rightCats = filesLeft, filesRight
+	default:
 		leftCats, rightCats = gitLeft, gitRight
 	}
 
@@ -1882,7 +1844,7 @@ func (m Model) renderHelp() string {
 	cols := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
 
 	// Tab bar (same style as the git overlay)
-	tabTitles := []string{"System", "Git"}
+	tabTitles := []string{"Navigate", "Files", "Git"}
 	activeStyle := lipgloss.NewStyle().Foreground(theme.AccentGreen).Bold(true).Underline(true)
 	inactiveStyle := lipgloss.NewStyle().Foreground(theme.FgDimColor)
 	dimDot := theme.Dim.Render("·")
@@ -1896,7 +1858,7 @@ func (m Model) renderHelp() string {
 		}
 	}
 	tabBar := " " + strings.Join(tabParts, dimDot) +
-		theme.Dim.Render("    Tab / Shift+Tab switch · 1 / 2 jump · ? or Esc close")
+		theme.Dim.Render("    Tab / Shift+Tab switch · 1 2 3 jump · ? or Esc close")
 
 	var out []string
 	out = append(out, "")
@@ -1904,6 +1866,14 @@ func (m Model) renderHelp() string {
 	out = append(out, tabBar)
 	out = append(out, "")
 	out = append(out, cols)
+	if m.helpTabIdx < 2 {
+		// The ⌘ keys only exist where the terminal passes them through.
+		out = append(out, theme.Muted.Render(
+			"  ⌘ shortcuts reach tuiple through the \"nvim IDE\" iTerm2 profile (nvim-ide/install.sh);"+
+				" the plain keys work everywhere."))
+		out = append(out, theme.Muted.Render(
+			"  Every action is also in the palette — Ctrl+P — and can be rebound in the settings file."))
+	}
 
 	return strings.Join(out, "\n")
 }

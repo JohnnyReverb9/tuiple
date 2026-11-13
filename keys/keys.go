@@ -14,7 +14,10 @@
 // showing, and hoisting them into a global table would only obscure it.
 package keys
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // Action is what a keystroke asks for, independent of which key produced
 // it.
@@ -48,6 +51,18 @@ const (
 	Redo          Action = "redo"
 	PanelNext     Action = "panel-next"
 	PanelPrev     Action = "panel-prev"
+	NavBack       Action = "back"
+	NavForward    Action = "forward"
+	Palette       Action = "find-action"
+	Recent        Action = "recent"
+	TabNew        Action = "tab-new"
+	TabClose      Action = "tab-close"
+	TabReopen     Action = "tab-reopen"
+	TabNext       Action = "tab-next"
+	TabPrev       Action = "tab-prev"
+	TabJump       Action = "tab-jump"
+	ToggleSidebar Action = "toggle-sidebar"
+	TogglePreview Action = "toggle-preview"
 	SeekBack      Action = "audio-seek-back"
 	SeekForward   Action = "audio-seek-forward"
 	SeekBackFar   Action = "audio-seek-back-far"
@@ -80,6 +95,13 @@ const (
 	Zip          Action = "zip"
 	Extract      Action = "extract"
 	DirSize      Action = "dir-size"
+	SelectAll    Action = "select-all"
+	InvertMarks  Action = "invert-selection"
+	Duplicate    Action = "duplicate"
+	CopyPath     Action = "copy-path"
+	OpenExternal Action = "open-default-app"
+	Reveal       Action = "reveal-in-finder"
+	OpenInTab    Action = "open-in-new-tab"
 
 	GitStage       Action = "git-stage"
 	GitUnstage     Action = "git-unstage"
@@ -116,16 +138,33 @@ var Defaults = []Binding{
 	{HalfPageDown, ScopeList, []string{"ctrl+d"}, "Half page down", "Navigation", "Ctrl+D"},
 	{HomeDir, ScopeList, []string{"~"}, "Go to home directory", "Navigation", ""},
 	{GoToPath, ScopeGlobal, []string{":"}, "Go to path", "Navigation", ""},
+	{NavBack, ScopeGlobal, []string{"[", "cmd+["}, "Back", "Navigation", ""},
+	{NavForward, ScopeGlobal, []string{"]", "cmd+]"}, "Forward", "Navigation", ""},
 	{PanelNext, ScopeGlobal, []string{"tab"}, "Next panel", "Navigation", "Tab"},
 	{PanelPrev, ScopeGlobal, []string{"shift+tab"}, "Previous panel", "Navigation", "Shift+Tab"},
 
-	// ── File operations ───────────────────────────────────────────
-	{Mark, ScopeList, []string{" "}, "Toggle selection", "File Operations", "Space"},
-	{ClearMarks, ScopeList, []string{"esc"}, "Clear all selections", "File Operations", "Esc"},
-	{Copy, ScopeList, []string{"c"}, "Copy", "File Operations", ""},
-	{Cut, ScopeList, []string{"x"}, "Cut", "File Operations", ""},
-	{Paste, ScopeList, []string{"p"}, "Paste", "File Operations", ""},
-	{Delete, ScopeList, []string{"d"}, "Delete (mode set in settings)", "File Operations", ""},
+	// ── Tabs ──────────────────────────────────────────────────────
+	//
+	// Finder's own shortcuts with the Cmd taken off: Cmd+T becomes t,
+	// Cmd+Shift+] becomes }, and so on.
+	{TabNew, ScopeGlobal, []string{"t"}, "New tab here", "Tabs", ""},
+	{OpenInTab, ScopeList, []string{"T"}, "Open the folder in a new tab", "Tabs", ""},
+	{TabClose, ScopeGlobal, []string{"w"}, "Close tab", "Tabs", ""},
+	{TabReopen, ScopeGlobal, []string{"ctrl+t"}, "Reopen the closed tab", "Tabs", ""},
+	{TabNext, ScopeGlobal, []string{"}"}, "Next tab", "Tabs", ""},
+	{TabPrev, ScopeGlobal, []string{"{"}, "Previous tab", "Tabs", ""},
+	{TabJump, ScopeGlobal, []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}, "Jump to tab", "Tabs", "1 … 9"},
+
+	// ── Selection, clipboard, file operations, undo ───────────────
+	{Mark, ScopeList, []string{" "}, "Toggle selection", "Selection & Clipboard", "Space"},
+	{SelectAll, ScopeList, []string{"ctrl+a", "cmd+a"}, "Select all", "Selection & Clipboard", ""},
+	{InvertMarks, ScopeList, []string{"*"}, "Invert selection", "Selection & Clipboard", ""},
+	{ClearMarks, ScopeList, []string{"esc"}, "Clear all selections", "Selection & Clipboard", "Esc"},
+	{Copy, ScopeList, []string{"c"}, "Copy", "Selection & Clipboard", ""},
+	{Cut, ScopeList, []string{"x"}, "Cut", "Selection & Clipboard", ""},
+	{Paste, ScopeList, []string{"p"}, "Paste", "Selection & Clipboard", ""},
+	{Duplicate, ScopeList, []string{"C", "cmd+d"}, "Duplicate", "File Operations", ""},
+	{Delete, ScopeList, []string{"d", "cmd+backspace"}, "Delete (mode set in settings)", "File Operations", ""},
 	{Rename, ScopeList, []string{"r"}, "Rename", "File Operations", ""},
 	{BulkRename, ScopeList, []string{"E"}, "Bulk rename in $EDITOR", "File Operations", ""},
 	{NewFile, ScopeList, []string{"n"}, "New file", "File Operations", ""},
@@ -133,14 +172,19 @@ var Defaults = []Binding{
 	{Zip, ScopeList, []string{"z"}, "Zip marked entries", "File Operations", ""},
 	{Extract, ScopeList, []string{"Z"}, "Extract archive", "File Operations", ""},
 	{DirSize, ScopeList, []string{"s"}, "Measure directory size", "File Operations", ""},
-	{Undo, ScopeGlobal, []string{"u"}, "Undo", "File Operations", ""},
-	{Redo, ScopeGlobal, []string{"U"}, "Redo", "File Operations", ""},
-	{History, ScopeGlobal, []string{"Y"}, "Action history", "File Operations", ""},
+	{CopyPath, ScopeList, []string{"y"}, "Copy path to the clipboard", "File Operations", ""},
+	{OpenExternal, ScopeList, []string{"O"}, "Open with the default app", "File Operations", ""},
+	{Reveal, ScopeList, []string{"ctrl+o"}, "Reveal in Finder", "File Operations", ""},
+	{Undo, ScopeGlobal, []string{"u", "cmd+z"}, "Undo", "Undo & History", ""},
+	{Redo, ScopeGlobal, []string{"U", "cmd+shift+z"}, "Redo", "Undo & History", ""},
+	{History, ScopeGlobal, []string{"Y"}, "Action history", "Undo & History", ""},
 
 	// ── Search & bookmarks ────────────────────────────────────────
-	{SearchName, ScopeGlobal, []string{"f"}, "Search file by name", "Search & Bookmarks", ""},
-	{SearchContent, ScopeGlobal, []string{"F"}, "Search in file contents", "Search & Bookmarks", ""},
-	{Filter, ScopeList, []string{"/"}, "Filter the current list", "Search & Bookmarks", ""},
+	{Palette, ScopeGlobal, []string{"ctrl+p", "cmd+shift+a"}, "Find action", "Search & Bookmarks", ""},
+	{Recent, ScopeGlobal, []string{"e", "cmd+e"}, "Recent files and places", "Search & Bookmarks", ""},
+	{SearchName, ScopeGlobal, []string{"f", "cmd+shift+o"}, "Go to file by name", "Search & Bookmarks", ""},
+	{SearchContent, ScopeGlobal, []string{"F", "cmd+shift+f"}, "Find in files", "Search & Bookmarks", ""},
+	{Filter, ScopeList, []string{"/", "cmd+f"}, "Filter the current list", "Search & Bookmarks", ""},
 	{Bookmark, ScopeGlobal, []string{"'"}, "(Un)bookmark this directory", "Search & Bookmarks", ""},
 
 	// ── Audio ─────────────────────────────────────────────────────
@@ -151,21 +195,23 @@ var Defaults = []Binding{
 
 	// ── System ────────────────────────────────────────────────────
 	{ToggleHidden, ScopeList, []string{"."}, "Toggle hidden files", "System & Options", ""},
-	{SortMenu, ScopeGlobal, []string{"o"}, "Sort by: (n)ame, (s)ize, (d)ate", "System & Options", "o n / o s / o d"},
+	{SortMenu, ScopeGlobal, []string{"o"}, "Sort by name / size / date", "System & Options", "o n / o s / o d"},
+	{ToggleSidebar, ScopeGlobal, []string{"B"}, "Show / hide the sidebar", "System & Options", ""},
+	{TogglePreview, ScopeGlobal, []string{"V"}, "Show / hide the preview", "System & Options", ""},
 	{Settings, ScopeGlobal, []string{","}, "Settings", "System & Options", ""},
 	{Shell, ScopeGlobal, []string{"S"}, "Open a shell here", "System & Options", ""},
-	{Help, ScopeGlobal, []string{"?"}, "Toggle this help screen", "System & Options", ""},
+	{Help, ScopeGlobal, []string{"?"}, "Keyboard shortcuts", "System & Options", ""},
 	{Quit, ScopeGlobal, []string{"q", "ctrl+c"}, "Quit", "System & Options", "q / Ctrl+C"},
 
 	// ── Git ───────────────────────────────────────────────────────
 	{GitPanel, ScopeGlobal, []string{"ctrl+g"}, "Git panel (commit / log / stashes)", "Git", "Ctrl+G"},
 	{Branches, ScopeGlobal, []string{"b"}, "Branches popup", "Git", ""},
 	{GitStage, ScopeList, []string{"a"}, "Stage the file under the cursor", "Git", ""},
-	{GitUnstage, ScopeList, []string{"R"}, "Unstage it", "Git", ""},
-	{GitDiscard, ScopeList, []string{"D"}, "Discard its changes", "Git", ""},
-	{GitIgnore, ScopeList, []string{"i"}, "Add it to .gitignore", "Git", ""},
-	{GitFileHistory, ScopeList, []string{"H"}, "Its commit history", "Git", ""},
-	{GitBlame, ScopeList, []string{"L"}, "Blame it", "Git", ""},
+	{GitUnstage, ScopeList, []string{"R"}, "Unstage the file", "Git", ""},
+	{GitDiscard, ScopeList, []string{"D"}, "Discard the file's changes", "Git", ""},
+	{GitIgnore, ScopeList, []string{"i"}, "Add to .gitignore", "Git", ""},
+	{GitFileHistory, ScopeList, []string{"H"}, "File history", "Git", ""},
+	{GitBlame, ScopeList, []string{"L"}, "Blame the file", "Git", ""},
 }
 
 // ── Runtime keymap ─────────────────────────────────────────────────────
@@ -209,6 +255,8 @@ func SetOverrides(overrides map[string][]string) {
 	for i := range next {
 		if keys, ok := overrides[string(next[i].Action)]; ok {
 			next[i].Keys = append([]string(nil), keys...)
+			// The hand-written help label described the default keys.
+			next[i].HelpKeys = ""
 		}
 	}
 
@@ -249,11 +297,96 @@ func (b Binding) Display() string {
 	if len(b.Keys) == 0 {
 		return "(unbound)"
 	}
-	out := b.Keys[0]
+	out := Pretty(b.Keys[0])
 	for _, k := range b.Keys[1:] {
-		out += " / " + k
+		out += " / " + Pretty(k)
 	}
 	return out
+}
+
+// Short is the one key worth showing where space is tight — the command
+// palette's right-hand column.
+func (b Binding) Short() string {
+	if len(b.Keys) == 0 {
+		return ""
+	}
+	return Pretty(b.Keys[0])
+}
+
+// Pretty turns a raw key name into what is printed on the keyboard:
+// "cmd+shift+o" reads as ⌘⇧O, "ctrl+p" as Ctrl+P, " " as Space.
+func Pretty(key string) string {
+	named := map[string]string{
+		" ": "Space", "enter": "Enter", "esc": "Esc", "tab": "Tab",
+		"backspace": "⌫", "up": "↑", "down": "↓", "left": "←", "right": "→",
+	}
+	// Peel the modifiers off the front; what is left is the key itself.
+	var cmd, shift, alt, ctrl bool
+	rest := key
+	for {
+		switch {
+		case strings.HasPrefix(rest, "cmd+") && len(rest) > 4:
+			cmd, rest = true, rest[4:]
+			continue
+		case strings.HasPrefix(rest, "shift+") && len(rest) > 6:
+			shift, rest = true, rest[6:]
+			continue
+		case strings.HasPrefix(rest, "alt+") && len(rest) > 4:
+			alt, rest = true, rest[4:]
+			continue
+		case strings.HasPrefix(rest, "ctrl+") && len(rest) > 5:
+			ctrl, rest = true, rest[5:]
+			continue
+		}
+		break
+	}
+	name, isNamed := named[rest]
+	if !isNamed {
+		name = rest
+	}
+	if !cmd && !shift && !alt && !ctrl {
+		return name
+	}
+	if !isNamed && len(rest) == 1 {
+		name = strings.ToUpper(rest)
+	}
+	if cmd {
+		// The macOS menu spelling: modifiers as glyphs, no separators.
+		out := ""
+		if ctrl {
+			out += "⌃"
+		}
+		if alt {
+			out += "⌥"
+		}
+		if shift {
+			out += "⇧"
+		}
+		return out + "⌘" + name
+	}
+	out := ""
+	if ctrl {
+		out += "Ctrl+"
+	}
+	if alt {
+		out += "Alt+"
+	}
+	if shift {
+		out += "Shift+"
+	}
+	return out + name
+}
+
+// Find returns the active binding of an action.
+func Find(action Action) (Binding, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, b := range bindings {
+		if b.Action == action {
+			return b, true
+		}
+	}
+	return Binding{}, false
 }
 
 // Categories lists the help-screen groups in table order.
