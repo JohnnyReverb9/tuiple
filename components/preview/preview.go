@@ -71,6 +71,12 @@ type FileInfo struct {
 	ModTime string
 	Perms   string
 	Items   int // dir only
+
+	Kind      string   // "Go source", "PNG image", "Folder"
+	ItemsDesc string   // dir only: "14 · 3 folders, 11 files"
+	Created   string   // creation time, where the system records it
+	Link      string   // symlink target
+	Details   []Detail // what only this type of file has: lines, pages, duration…
 }
 
 // ── Model ──────────────────────────────────────────────────────────────
@@ -88,6 +94,10 @@ type Model struct {
 	width        int
 	height       int
 	focused      bool
+
+	// gitStat is the porcelain status per absolute path in the current
+	// repository, pushed in by the app; nil outside a repository.
+	gitStat map[string]string
 
 	// Audio player state
 	audioMeta       mediarender.AudioInfo
@@ -109,6 +119,10 @@ func New() Model { return Model{} }
 
 func (m *Model) SetSize(w, h int)  { m.width = w; m.height = h }
 func (m *Model) SetFocused(f bool) { m.focused = f }
+
+// SetGitState gives the panel each changed file's git status, so the info
+// block can say "modified, not staged". nil outside a repository.
+func (m *Model) SetGitState(fileStat map[string]string) { m.gitStat = fileStat }
 
 // ── LoadFile ───────────────────────────────────────────────────────────
 
@@ -136,11 +150,10 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 	hexDump := previewCfg.HexDump
 	maxText, maxMedia := previewLimits()
 	return func() tea.Msg {
-		info := FileInfo{
-			Name:    entry.Name,
-			Size:    entry.Size,
-			ModTime: filesystem.FormatTime(entry.ModTime),
-			Perms:   entry.Mode.String(),
+		info := baseInfo(entry)
+		info.Kind = kindOf(entry, readHead(entry.Path))
+		if ext := strings.ToLower(entry.Extension); zipLike[ext] {
+			info.Details = zipDetails(entry.Path)
 		}
 
 		// ── Media preview (images, video, PDF, audio) ───────────────
@@ -164,6 +177,8 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 				}
 			}
 
+			info.Details = mediaDetails(entry.Path, mediaKind)
+
 			// Allow larger files for media (50 MB by default)
 			if entry.Size > maxMedia {
 				return ContentLoadedMsg{
@@ -172,9 +187,10 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 				}
 			}
 
-			// Reserve the header rows and the panel's gutter.
+			// Reserve the header rows (plus one for a git row that may
+			// join them) and the panel's gutter.
 			renderCols := max(1, previewW-3)
-			renderRows := max(1, previewH-headerRows-1)
+			renderRows := max(1, previewH-headerHeight(info, "")-2)
 
 			var content string
 			var renderErr error
@@ -229,6 +245,7 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 
 		// Text → full up to the size limit. The newline that ends the
 		// last line is not a line of its own.
+		info.Details = append(info.Details, textDetails(data)...)
 		content := strings.TrimSuffix(string(data), "\n")
 		return ContentLoadedMsg{
 			Path: entry.Path, Content: content,
@@ -242,17 +259,15 @@ func (m Model) LoadFile(entry filesystem.FileEntry) tea.Cmd {
 // -1 as a sentinel meaning "recursive size is being computed".
 func (m Model) loadDirImmediate(entry filesystem.FileEntry) tea.Cmd {
 	return func() tea.Msg {
-		info := FileInfo{
-			Name:    entry.Name,
-			Size:    -1, // sentinel: "calculating..."
-			ModTime: filesystem.FormatTime(entry.ModTime),
-			Perms:   entry.Mode.String(),
-			Items:   filesystem.DirItemCount(entry.Path),
-		}
+		info := baseInfo(entry)
+		info.Size = -1 // sentinel: "calculating..."
+		info.Kind = "Folder"
+		info.Items = filesystem.DirItemCount(entry.Path)
+		info.ItemsDesc = dirItems(entry.Path)
 		entries, _ := filesystem.ReadDir(entry.Path, false)
 		var lines []string
 		// As many names as the panel can show without scrolling.
-		limit := max(20, m.height-headerRows-1)
+		limit := max(20, m.height-headerHeight(info, "")-1)
 		for i, e := range entries {
 			if i >= limit {
 				lines = append(lines, fmt.Sprintf("… and %d more", len(entries)-limit))
@@ -387,7 +402,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, m.audioTickCmd()
 
 	case tea.MouseMsg:
-		maxScroll := max(0, m.contentLines-max(1, m.height-headerRows))
+		maxScroll := max(0, m.contentLines-max(1, m.height-m.headerRows()))
 		if msg.Type == tea.MouseWheelUp {
 			if m.scrollOffset > 0 {
 				m.scrollOffset--
@@ -418,7 +433,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 
-		maxScroll := max(0, m.contentLines-max(1, m.height-headerRows))
+		maxScroll := max(0, m.contentLines-max(1, m.height-m.headerRows()))
 		switch msg.String() {
 		case "up", "k":
 			if m.scrollOffset > 0 {
@@ -588,9 +603,12 @@ func (m Model) audioTickCmd() tea.Cmd {
 
 // ── View ───────────────────────────────────────────────────────────────
 
-// headerRows is what the panel spends above the content: the name, one
-// line of metadata, and a blank row.
-const headerRows = 3
+// headerRows is what the panel spends above the content: the name, the
+// labelled info rows, and a blank row.
+func (m Model) headerRows() int { return headerHeight(m.info, m.gitCode()) }
+
+// headerHeight is the name, the info rows and the blank line under them.
+func headerHeight(info FileInfo, git string) int { return len(infoRows(info, git)) + 2 }
 
 func (m Model) View() string {
 	// One config read per frame; the setting cannot change halfway
@@ -610,15 +628,15 @@ func (m Model) View() string {
 
 	var sections []string
 
-	// Name, then the metadata on a single dim line. With the keyboard in
-	// this panel the name takes the accent colour — the panel has no
-	// cursor row to show focus with.
+	// Name, then the info rows. With the keyboard in this panel the name
+	// takes the accent colour — the panel has no cursor row to show focus
+	// with.
 	nameStyle := theme.PreviewName
 	if m.focused {
 		nameStyle = nameStyle.Foreground(theme.AccentBlue)
 	}
 	sections = append(sections, nameStyle.MaxWidth(inner).Render(m.info.Name))
-	sections = append(sections, theme.PreviewInfo.MaxWidth(inner).Render(m.metaLine()))
+	sections = append(sections, renderInfoRows(infoRows(m.info, m.gitCode()), inner)...)
 	sections = append(sections, "") // spacer
 
 	// ── Audio player UI ────────────────────────────────────────────
@@ -630,7 +648,7 @@ func (m Model) View() string {
 	// Content (scrollable)
 	if m.content != "" {
 		lines := strings.Split(m.content, "\n")
-		availH := max(1, m.height-headerRows)
+		availH := max(1, m.height-m.headerRows())
 
 		// Clamp scroll efficiently to prevent jitter
 		maxScroll := max(0, len(lines)-availH)
@@ -674,23 +692,98 @@ func (m Model) View() string {
 	return indent(padPanelLines(strings.Join(sections, "\n"), inner, m.height))
 }
 
-// metaLine condenses what used to be a column of labelled rows: size,
-// modification time and permissions, plus the item count for a folder.
-func (m Model) metaLine() string {
-	sizeStr := filesystem.FormatSize(m.info.Size)
-	if m.isDir && m.info.Size < 0 {
-		// Sentinel: the recursive walk is still running.
-		sizeStr = "measuring…"
+// infoRows lists the labelled rows under the name: what the file is,
+// how big, what only its type has (lines, pages, duration…), then dates,
+// permissions and git status.
+func infoRows(info FileInfo, git string) []Detail {
+	var rows []Detail
+	if info.Kind != "" && info.Kind != "Folder" {
+		rows = append(rows, Detail{"Kind", info.Kind})
 	}
-	parts := []string{sizeStr, m.info.ModTime, m.info.Perms}
-	if m.isDir {
-		items := fmt.Sprintf("%d items", m.info.Items)
-		if m.info.Items == 1 {
-			items = "1 item"
+	if info.ItemsDesc != "" {
+		rows = append(rows, Detail{"Items", info.ItemsDesc})
+	}
+	size := filesystem.FormatSize(info.Size)
+	if info.Size < 0 {
+		size = "measuring…" // the recursive walk is still running
+	}
+	rows = append(rows, Detail{"Size", size})
+	rows = append(rows, info.Details...)
+	rows = append(rows, Detail{"Modified", info.ModTime})
+	if info.Created != "" && info.Created != info.ModTime {
+		rows = append(rows, Detail{"Created", info.Created})
+	}
+	rows = append(rows, Detail{"Perms", info.Perms})
+	if info.Link != "" {
+		rows = append(rows, Detail{"Link", "→ " + info.Link})
+	}
+	if git != "" {
+		rows = append(rows, Detail{"Git", gitLabel(git)})
+	}
+	return rows
+}
+
+// renderInfoRows lays the rows out as a two-column table: dim labels in
+// a column as wide as the longest one, values in the text colour.
+func renderInfoRows(rows []Detail, w int) []string {
+	labelW := 0
+	for _, r := range rows {
+		labelW = max(labelW, len(r.Label))
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		label := theme.PreviewInfo.Render(fmt.Sprintf("%-*s", labelW+3, r.Label))
+		value := theme.Normal.MaxWidth(max(1, w-labelW-3)).Render(r.Value)
+		out = append(out, label+value)
+	}
+	return out
+}
+
+// gitCode is the shown file's porcelain status, "" when it is clean or
+// not in a repository.
+func (m Model) gitCode() string {
+	if m.gitStat == nil || m.isDir {
+		return ""
+	}
+	return m.gitStat[m.path]
+}
+
+// baseInfo is what every entry has: name, size, dates, permissions.
+func baseInfo(entry filesystem.FileEntry) FileInfo {
+	info := FileInfo{
+		Name:    entry.Name,
+		Size:    entry.Size,
+		ModTime: filesystem.FormatTime(entry.ModTime),
+		Perms:   entry.Mode.String(),
+	}
+	if st, err := os.Stat(entry.Path); err == nil {
+		if born, ok := birthTime(st); ok && !born.IsZero() {
+			info.Created = filesystem.FormatTime(born)
 		}
-		parts = append([]string{items}, parts...)
 	}
-	return strings.Join(parts, " · ")
+	if entry.IsSymlink {
+		info.Link = entry.LinkTarget
+	}
+	return info
+}
+
+// readHead reads the first bytes of a file, enough to recognise magic
+// numbers and a shebang line.
+func readHead(path string) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	return buf[:n]
+}
+
+// zipLike are the extensions whose files are zip archives inside.
+var zipLike = map[string]bool{
+	".zip": true, ".jar": true, ".docx": true, ".xlsx": true, ".pptx": true,
+	".epub": true, ".apk": true, ".whl": true,
 }
 
 // expandTabs replaces tabs with spaces. A terminal moves to the next tab

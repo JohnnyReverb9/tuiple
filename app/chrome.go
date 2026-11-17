@@ -177,7 +177,7 @@ func (m Model) renderStatusBar() string {
 	// Left: the repository, then whatever just happened.
 	var left []string
 	if m.gitBranch != "" {
-		branch := lipgloss.NewStyle().Foreground(theme.AccentGreen).Bold(true).Render(m.gitBranch)
+		branch := lipgloss.NewStyle().Foreground(theme.AccentGreen).Bold(true).Render("[" + m.gitBranch + "]")
 		if m.gitAhead > 0 {
 			branch += theme.Dim.Render(fmt.Sprintf(" ↑%d", m.gitAhead))
 		}

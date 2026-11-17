@@ -197,7 +197,7 @@ func (m Model) runGlobal(action keys.Action, key string) (Model, tea.Cmd, bool) 
 
 	case keys.SortMenu:
 		m.awaitingSort = true
-		m.statusMsg = "Sort by: (n)ame, (s)ize, (d)ate — the current one again reverses it"
+		m.statusMsg = "Sort by: (n)ame, (s)ize, (d)ate"
 		return m, nil, true
 
 	case keys.Shell:

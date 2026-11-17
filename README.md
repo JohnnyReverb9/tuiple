@@ -56,7 +56,11 @@ persistent log you can browse with `Y`. Deleting is reversible by default: files
 wait out a countdown before they are really gone, or go to the macOS Trash if
 you prefer — your choice in the settings.
 
-The preview panel renders text with per-extension colouring, images and video
+The preview panel opens with a short info table — kind, size, dates,
+permissions, git status, plus what only that kind of file has: line count and
+line endings for text, dimensions for images, duration for video, pages for
+PDFs, contents of zip archives, the interpreter of a script. Below it, it
+renders text with per-extension colouring, images and video
 thumbnails as Unicode half-blocks, PDF covers via Quick Look, and audio files as
 a player with seeking and metadata. `chafa` gives you a full-quality image view,
 `bookokrat` opens e-books, and `S` drops you into a shell in the current

@@ -74,6 +74,7 @@ func (m *Model) refreshGit() {
 		m.gitFileStat = nil
 		m.gitDirHas = nil
 		m.filelist.SetGitState(nil, nil)
+		m.preview.SetGitState(nil)
 		return
 	}
 	root, err := git.FindRoot(m.currentPath)
@@ -84,6 +85,7 @@ func (m *Model) refreshGit() {
 		m.gitFileStat = nil
 		m.gitDirHas = nil
 		m.filelist.SetGitState(nil, nil)
+		m.preview.SetGitState(nil)
 		return
 	}
 	prevRoot, prevBranch := m.gitRoot, m.gitBranch
@@ -132,6 +134,7 @@ func (m *Model) refreshGit() {
 	m.gitFileStat = fileStat
 	m.gitDirHas = dirHas
 	m.filelist.SetGitState(fileStat, dirHas)
+	m.preview.SetGitState(fileStat)
 }
 
 // ── Dialog / State ─────────────────────────────────────────────────────
