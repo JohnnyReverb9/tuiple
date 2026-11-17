@@ -202,7 +202,7 @@ var Defaults = []Binding{
 
 	// ── System ────────────────────────────────────────────────────
 	{ToggleHidden, ScopeList, []string{"."}, "Toggle hidden files", "System & Options", ""},
-	{SortMenu, ScopeGlobal, []string{"o"}, "Sort by name / size / date", "System & Options", "o n / o s / o d"},
+	{SortMenu, ScopeGlobal, []string{"o"}, "Sort by name / size / date (again: reverse)", "System & Options", "o n / o s / o d"},
 	{ToggleSidebar, ScopeGlobal, []string{"B"}, "Show / hide the sidebar", "System & Options", ""},
 	{TogglePreview, ScopeGlobal, []string{"V"}, "Show / hide the preview", "System & Options", ""},
 	{Settings, ScopeGlobal, []string{","}, "Settings", "System & Options", ""},

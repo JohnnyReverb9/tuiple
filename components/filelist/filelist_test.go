@@ -419,3 +419,50 @@ func TestExpandAndCollapseInPlace(t *testing.T) {
 		t.Errorf("bulk rename would cover %v", names)
 	}
 }
+
+// names lists the files (not folders) in display order.
+func names(m Model) []string {
+	var out []string
+	for _, e := range m.entries {
+		if !e.IsDir {
+			out = append(out, e.Name)
+		}
+	}
+	return out
+}
+
+// Choosing the current sort again flips it, like a column header; another
+// column starts in the configured direction again.
+func TestSortAgainReverses(t *testing.T) {
+	root := fixture(t)
+	m := New(root)
+	if m.SortMode() != filesystem.SortByName || m.SortReverse() {
+		t.Skip("config does not start in plain name order")
+	}
+
+	next := m.NextSort(filesystem.SortByName)
+	if !next.Reverse {
+		t.Fatal("same column did not flip")
+	}
+	m, cmd := m.Update(next)
+	m = deliver(t, m, cmd)
+	if got := strings.Join(names(m), ","); got != "beta.txt,alpha.txt" {
+		t.Fatalf("reversed = %q", got)
+	}
+	if !strings.Contains(m.renderHeader(), "▴") {
+		t.Fatal("header does not show the reversed arrow")
+	}
+
+	m, cmd = m.Update(m.NextSort(filesystem.SortByName))
+	m = deliver(t, m, cmd)
+	if got := strings.Join(names(m), ","); got != "alpha.txt,beta.txt" {
+		t.Fatalf("flipped back = %q", got)
+	}
+
+	// From reversed name order, switching column resets the direction.
+	m, cmd = m.Update(m.NextSort(filesystem.SortByName))
+	m = deliver(t, m, cmd)
+	if next := m.NextSort(filesystem.SortByDate); next.Reverse || next.Mode != filesystem.SortByDate {
+		t.Fatalf("new column = %+v", next)
+	}
+}

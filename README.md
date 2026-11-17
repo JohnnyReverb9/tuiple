@@ -163,7 +163,7 @@ Search, view, system
 | `/` | Filter the current list |
 | `'` | Bookmark this directory |
 | `.` | Show hidden files |
-| `o n` `o s` `o d` | Sort by name / size / date |
+| `o n` `o s` `o d` | Sort by name / size / date; the same key again reverses it |
 | `l` `-` `=` `_` `+` | Audio: play-pause, seek ±5s, seek ±30s |
 | `B` / `V` | Show or hide the sidebar / the preview |
 | `Ctrl+R` | Run a project command |

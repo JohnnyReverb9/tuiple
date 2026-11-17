@@ -217,5 +217,5 @@ func runInTerminal(dir, command string) tea.Cmd {
 		"printf '\\n[exit %s] press Enter to return ' \"$code\"; read -r _"
 	cmd := exec.Command("sh", "-c", script, "tuiple-run", command)
 	cmd.Dir = dir
-	return tea.ExecProcess(cmd, func(error) tea.Msg { return filelist.RefreshListMsg{} })
+	return runExternal(cmd, func(error) tea.Msg { return filelist.RefreshListMsg{} })
 }

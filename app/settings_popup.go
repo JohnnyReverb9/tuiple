@@ -764,7 +764,7 @@ func (h *SettingsPopup) editConfigFile() tea.Cmd {
 		return nil
 	}
 	cmd := exec.Command(config.Get().Editor(), config.Path())
-	return tea.ExecProcess(cmd, func(error) tea.Msg { return settingsReloadedMsg{} })
+	return runExternal(cmd, func(error) tea.Msg { return settingsReloadedMsg{} })
 }
 
 func changedCmd() tea.Cmd {

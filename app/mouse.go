@@ -142,9 +142,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if middle {
 				return m, nil
 			}
-			mode := m.filelist.SortAt(msg.X - listX0)
-			m.statusMsg = "Sorted by " + sortName(mode)
-			return m, m.listCmd(filelist.SortListMsg{Mode: mode})
+			// Clicking the sorted column again flips its direction.
+			next := m.filelist.NextSort(m.filelist.SortAt(msg.X - listX0))
+			m.statusMsg = sortStatus(next)
+			return m, m.listCmd(next)
 		}
 
 		idx, ok := m.filelist.EntryAt(row)
@@ -206,4 +207,20 @@ func sortName(mode filesystem.SortMode) string {
 		return "type"
 	}
 	return "name"
+}
+
+// sortStatus says what a sort change did, direction included, so a second
+// press visibly does something.
+func sortStatus(s filelist.SortListMsg) string {
+	dir := map[filesystem.SortMode][2]string{
+		filesystem.SortByName: {"A → Z", "Z → A"},
+		filesystem.SortBySize: {"largest first", "smallest first"},
+		filesystem.SortByDate: {"newest first", "oldest first"},
+		filesystem.SortByType: {"A → Z", "Z → A"},
+	}[s.Mode]
+	way := dir[0]
+	if s.Reverse {
+		way = dir[1]
+	}
+	return "Sorted by " + sortName(s.Mode) + ", " + way
 }

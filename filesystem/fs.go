@@ -96,7 +96,14 @@ const (
 // SortEntries orders a directory listing. Directories come first and the
 // order can be reversed, both per the current settings.
 func SortEntries(entries []FileEntry, mode SortMode) {
-	dirsFirst, reverse := sortOptions()
+	_, reverse := sortOptions()
+	SortEntriesDir(entries, mode, reverse)
+}
+
+// SortEntriesDir is SortEntries with the direction given explicitly, for
+// a list that flipped its own order away from the configured one.
+func SortEntriesDir(entries []FileEntry, mode SortMode, reverse bool) {
+	dirsFirst, _ := sortOptions()
 
 	sort.SliceStable(entries, func(i, j int) bool {
 		// Directories first, when asked. This grouping is deliberately

@@ -50,7 +50,7 @@ func startBulkRename(dir string, names []string) tea.Cmd {
 
 	cmd := exec.Command(config.Get().Editor(), editPath)
 	cmd.Dir = dir
-	return tea.ExecProcess(cmd, func(error) tea.Msg {
+	return runExternal(cmd, func(error) tea.Msg {
 		return bulkRenameDoneMsg{dir: dir, original: names, editPath: editPath}
 	})
 }

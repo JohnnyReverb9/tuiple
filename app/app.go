@@ -548,17 +548,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
 			m.awaitingSort = false
 			var sortCmd tea.Cmd
-			switch keyMsg.String() {
-			case "n":
-				sortCmd = m.listCmd(filelist.SortListMsg{Mode: filesystem.SortByName})
-				m.statusMsg = "Sorted by name"
-			case "s":
-				sortCmd = m.listCmd(filelist.SortListMsg{Mode: filesystem.SortBySize})
-				m.statusMsg = "Sorted by size"
-			case "d":
-				sortCmd = m.listCmd(filelist.SortListMsg{Mode: filesystem.SortByDate})
-				m.statusMsg = "Sorted by date"
-			default:
+			modes := map[string]filesystem.SortMode{
+				"n": filesystem.SortByName,
+				"s": filesystem.SortBySize,
+				"d": filesystem.SortByDate,
+			}
+			if mode, ok := modes[keyMsg.String()]; ok {
+				// The same key again flips the direction.
+				next := m.filelist.NextSort(mode)
+				sortCmd = m.listCmd(next)
+				m.statusMsg = sortStatus(next)
+			} else {
 				m.statusMsg = "Sort cancelled"
 			}
 			return m, sortCmd
@@ -749,7 +749,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// "$(rm -rf ~).png" would run when opened.
 				shCmd := fmt.Sprintf("clear; chafa %s; echo; echo '  Press any key to return...'; stty raw -echo; dd bs=1 count=1 2>/dev/null; stty -raw echo; clear", shellQuote(msg.Path))
 				cmd := exec.Command("sh", "-c", shCmd)
-				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+				return m, runExternal(cmd, func(err error) tea.Msg {
 					return filelist.RefreshListMsg{}
 				})
 			}
@@ -759,7 +759,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ext == ".pdf" || ext == ".epub" || ext == ".djvu" {
 			if _, err := exec.LookPath("bookokrat"); err == nil {
 				cmd := exec.Command("bookokrat", msg.Path)
-				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+				return m, runExternal(cmd, func(err error) tea.Msg {
 					return filelist.RefreshListMsg{}
 				})
 			}
@@ -772,14 +772,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// chafa call above.
 				shCmd := fmt.Sprintf("pdftotext %s - | less -r", shellQuote(msg.Path))
 				cmd := exec.Command("sh", "-c", shCmd)
-				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+				return m, runExternal(cmd, func(err error) tea.Msg {
 					return filelist.RefreshListMsg{}
 				})
 			}
 		}
 
 		cmd := exec.Command(cfg.Editor(), msg.Path)
-		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return m, runExternal(cmd, func(err error) tea.Msg {
 			return filelist.RefreshListMsg{}
 		})
 	case filelist.BulkRenameRequestMsg:
@@ -928,7 +928,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		open := func() tea.Msg { return filelist.OpenFileRequestMsg{Path: msg.SelectedPath} }
 		if msg.Mode == search.ModeContentSearch && msg.LineNum > 0 {
 			editor := exec.Command(config.Get().Editor(), fmt.Sprintf("+%d", msg.LineNum), msg.SelectedPath)
-			open = tea.ExecProcess(editor, func(error) tea.Msg { return filelist.RefreshListMsg{} })
+			open = runExternal(editor, func(error) tea.Msg { return filelist.RefreshListMsg{} })
 		}
 		return next, tea.Sequence(cmd, open)
 
@@ -1239,7 +1239,7 @@ func (m *Model) applySettings() tea.Cmd {
 	// Sorting options are not part of SortListMsg, so nudge the list into
 	// re-reading with them applied even when the mode itself is unchanged.
 	cmds = append(cmds, m.listCmd(filelist.RefreshListMsg{}))
-	cmds = append(cmds, m.listCmd(filelist.SortListMsg{Mode: c.SortMode()}))
+	cmds = append(cmds, m.listCmd(filelist.SortListMsg{Mode: c.SortMode(), Reverse: c.Files.Reverse}))
 	m.refreshGit()
 
 	// Reload the preview so a changed media / size limit is visible
@@ -1353,7 +1353,7 @@ func openWithRule(rule config.OpenRule, path string) tea.Cmd {
 	}
 
 	if rule.Terminal {
-		return tea.ExecProcess(exec.Command("sh", "-c", cmdLine), func(err error) tea.Msg {
+		return runExternal(exec.Command("sh", "-c", cmdLine), func(err error) tea.Msg {
 			return filelist.RefreshListMsg{}
 		})
 	}

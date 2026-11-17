@@ -124,9 +124,11 @@ type EntriesLoadedMsg struct {
 // setting changes so the switch takes effect without a restart.
 type SetShowHiddenMsg struct{ Show bool }
 
-// SortListMsg asks the list to reload with a specific sort mode.
+// SortListMsg asks the list to reload with a specific sort mode and
+// direction. NextSort builds the one a key or header click means.
 type SortListMsg struct {
-	Mode filesystem.SortMode
+	Mode    filesystem.SortMode
+	Reverse bool
 }
 
 // ── Model ──────────────────────────────────────────────────────────────
@@ -161,6 +163,7 @@ type Model struct {
 	currentPath string
 	showHidden  bool
 	sortMode    filesystem.SortMode
+	sortReverse bool // this list's direction; starts at the configured one
 	filter      string
 	filtering   bool
 
@@ -213,6 +216,7 @@ func New(path string) Model {
 		id:          nextID.Add(1),
 		currentPath: path,
 		sortMode:    cfg.SortMode(),
+		sortReverse: cfg.Files.Reverse,
 		showHidden:  cfg.Files.ShowHidden,
 		focused:     true,
 		selected:    make(map[string]struct{}),
@@ -231,6 +235,7 @@ func (m Model) Spawn(path string) Model {
 		id:          nextID.Add(1),
 		currentPath: path,
 		sortMode:    m.sortMode,
+		sortReverse: m.sortReverse,
 		showHidden:  m.showHidden,
 		width:       m.width,
 		height:      m.height,
@@ -254,8 +259,23 @@ func (m Model) IsFiltering() bool               { return m.filtering }
 func (m Model) Filter() string                  { return m.filter }
 func (m Model) ShowHidden() bool                { return m.showHidden }
 func (m Model) SortMode() filesystem.SortMode   { return m.sortMode }
-func (m Model) CanGoBack() bool                 { return len(m.back) > 0 }
-func (m Model) CanGoForward() bool              { return len(m.forward) > 0 }
+
+// SortReverse reports whether the list runs against the usual direction
+// (Z→A, smallest first, oldest first).
+func (m Model) SortReverse() bool { return m.sortReverse }
+
+// NextSort is what choosing mode should do, the way a column header does
+// in Finder or JetBrains: the current column flips its direction, another
+// column starts in the configured one.
+func (m Model) NextSort(mode filesystem.SortMode) SortListMsg {
+	if mode == m.sortMode {
+		return SortListMsg{Mode: mode, Reverse: !m.sortReverse}
+	}
+	return SortListMsg{Mode: mode, Reverse: config.Get().Files.Reverse}
+}
+
+func (m Model) CanGoBack() bool    { return len(m.back) > 0 }
+func (m Model) CanGoForward() bool { return len(m.forward) > 0 }
 
 // MarkedCount is how many entries of the current directory are marked.
 func (m Model) MarkedCount() int { return len(m.selected) }
@@ -436,7 +456,7 @@ func (m Model) jump(path, selectName string, cursor, offset int) (Model, tea.Cmd
 // is nothing on screen yet to keep responsive, and the first directory
 // has to be there before the first frame is drawn.
 func (m *Model) loadNow() {
-	entries, err := readTree(m.currentPath, m.showHidden, m.sortMode, m.expanded, 0)
+	entries, err := readTree(m.currentPath, m.showHidden, m.sortMode, m.sortReverse, m.expanded, 0)
 	if err != nil {
 		m.err = err
 		m.allEntries = nil
@@ -466,7 +486,7 @@ func (m *Model) startLoad(selectName string, cursor, offset int) tea.Cmd {
 	token := m.loadToken
 	path := m.currentPath
 	showHidden := m.showHidden
-	sortMode := m.sortMode
+	sortMode, sortReverse := m.sortMode, m.sortReverse
 
 	// A copy: the read runs on another goroutine while the map may change.
 	expanded := make(map[string]bool, len(m.expanded))
@@ -475,7 +495,7 @@ func (m *Model) startLoad(selectName string, cursor, offset int) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		entries, err := readTree(path, showHidden, sortMode, expanded, 0)
+		entries, err := readTree(path, showHidden, sortMode, sortReverse, expanded, 0)
 		return EntriesLoadedMsg{ListID: id, Path: path, Token: token, Entries: entries, Err: err}
 	}
 }
@@ -487,13 +507,13 @@ const maxTreeDepth = 16
 // readTree lists a directory and, under each expanded folder, that
 // folder's own listing one level deeper. Every level is sorted on its
 // own, so a folder's contents stay together beneath it.
-func readTree(path string, showHidden bool, mode filesystem.SortMode,
+func readTree(path string, showHidden bool, mode filesystem.SortMode, reverse bool,
 	expanded map[string]bool, depth int) ([]filesystem.FileEntry, error) {
 	entries, err := filesystem.ReadDir(path, showHidden)
 	if err != nil {
 		return nil, err
 	}
-	filesystem.SortEntries(entries, mode)
+	filesystem.SortEntriesDir(entries, mode, reverse)
 	if len(expanded) == 0 && depth == 0 {
 		return entries, nil
 	}
@@ -503,7 +523,7 @@ func readTree(path string, showHidden bool, mode filesystem.SortMode,
 		out = append(out, e)
 		if e.IsDir && expanded[e.Path] && depth < maxTreeDepth {
 			// An unreadable folder just shows as empty.
-			if kids, err := readTree(e.Path, showHidden, mode, expanded, depth+1); err == nil {
+			if kids, err := readTree(e.Path, showHidden, mode, reverse, expanded, depth+1); err == nil {
 				out = append(out, kids...)
 			}
 		}
@@ -792,10 +812,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// Re-selecting the current order is a no-op rather than a jump
 		// back to the top: settings changes broadcast this message on
 		// every edit, and none of them should move the cursor.
-		if m.sortMode == msg.Mode {
+		if m.sortMode == msg.Mode && m.sortReverse == msg.Reverse {
 			return m, nil
 		}
-		m.sortMode = msg.Mode
+		m.sortMode, m.sortReverse = msg.Mode, msg.Reverse
 		var selectedName string
 		if e := m.SelectedEntry(); e != nil {
 			selectedName = e.Name
@@ -1263,9 +1283,8 @@ func (m Model) View() string {
 // direction, ▴ when the order is reversed — the way Finder marks it.
 func (m Model) renderHeader() string {
 	nameW := m.nameWidth()
-	_, reversed := filesystem.SortOptions()
 	arrow := " ▾"
-	if reversed {
+	if m.sortReverse {
 		arrow = " ▴"
 	}
 
