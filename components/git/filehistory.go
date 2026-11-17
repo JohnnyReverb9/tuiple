@@ -89,6 +89,15 @@ func (m FileHistoryPopup) Update(msg tea.Msg) (FileHistoryPopup, tea.Cmd) {
 	if !m.active {
 		return m, nil
 	}
+	// The wheel scrolls like the arrow keys.
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		switch mouse.Button {
+		case tea.MouseButtonWheelUp:
+			msg = tea.KeyMsg{Type: tea.KeyUp}
+		case tea.MouseButtonWheelDown:
+			msg = tea.KeyMsg{Type: tea.KeyDown}
+		}
+	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil

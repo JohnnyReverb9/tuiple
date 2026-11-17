@@ -141,6 +141,8 @@ type BranchesPopup struct {
 	compare    *Comparison // non-nil while "compare with current" is shown
 	compareOff int
 
+	clicks clicks // the last mouse press, for double clicks
+
 	status    string
 	statusErr bool
 
@@ -1044,6 +1046,9 @@ func (m BranchesPopup) Update(msg tea.Msg) (BranchesPopup, tea.Cmd) {
 	if r, ok := msg.(opDoneMsg); ok {
 		m.finishOp(r)
 		return m, changed
+	}
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		return m.handleMouse(mouse)
 	}
 
 	if m.inputMode != branchesInputNone {

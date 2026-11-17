@@ -471,6 +471,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// ── Mouse over a popup ─────────────────────────────────────────
+	// Popups get the event in their own coordinates. Only presses and
+	// the wheel matter (motion and releases would flood the loop), and a
+	// press outside the box does nothing rather than reach the panels
+	// underneath.
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		if _, _, _, open := m.topPopup(); open {
+			wheel := mouse.Button == tea.MouseButtonWheelUp || mouse.Button == tea.MouseButtonWheelDown
+			press := mouse.Action == tea.MouseActionPress && mouse.Button == tea.MouseButtonLeft
+			local, inside := m.popupMouse(mouse)
+			if !wheel && !(press && inside) {
+				return m, nil
+			}
+			msg = local
+		}
+	}
+
 	// ── Info box: any key closes it ────────────────────────────────
 	if m.infoBox != "" {
 		switch msg.(type) {
@@ -1045,10 +1062,28 @@ func (m Model) View() string {
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, panels...)
 
-	// Popups float over the panels. Several can be open at once (the
-	// file history sits on top of the git panel); the topmost is the
-	// one drawn, and the order below is bottom to top.
-	var box string
+	if box, x, y, ok := m.topPopup(); ok {
+		content = floatOver(content, box, m.width, x, y)
+	}
+
+	statusBar := m.renderStatusBar()
+
+	rows := make([]string, 0, 6)
+	if m.tabBarVisible() {
+		rows = append(rows, m.renderTabBar())
+	}
+	rows = append(rows, breadcrumb, sep, content, sep, statusBar)
+
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// topPopup renders the popup drawn over the panels, if any, and where its
+// top-left corner sits inside the panel area. Several can be open at once
+// (the file history sits on top of the git panel); the topmost is the one
+// drawn, and the order below is bottom to top. Mouse handling uses the
+// same placement to turn screen positions into positions in the box.
+func (m Model) topPopup() (box string, x, y int, ok bool) {
+	contentH := m.contentHeight()
 	atTop := false
 	if m.searchOverlay.IsActive() {
 		m.searchOverlay.SetSize(m.searchWidth(), contentH)
@@ -1088,23 +1123,31 @@ func (m Model) View() string {
 	if m.infoBox != "" {
 		box = m.infoBox
 	}
-	if box != "" {
-		x, y := centred(box, m.width, contentH)
-		if atTop {
-			y = min(y, 2)
-		}
-		content = floatOver(content, box, m.width, x, y)
+	if box == "" {
+		return "", 0, 0, false
 	}
-
-	statusBar := m.renderStatusBar()
-
-	rows := make([]string, 0, 6)
-	if m.tabBarVisible() {
-		rows = append(rows, m.renderTabBar())
+	x, y = centred(box, m.width, contentH)
+	if atTop {
+		y = min(y, 2)
 	}
-	rows = append(rows, breadcrumb, sep, content, sep, statusBar)
+	return box, x, y, true
+}
 
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+// popupMouse turns a mouse event on the screen into one in the topmost
+// popup's own coordinates, (0, 0) being its top-left border corner, which
+// is what the popups' mouse handling expects. inside reports whether the
+// pointer is over the box at all.
+func (m Model) popupMouse(msg tea.MouseMsg) (local tea.MouseMsg, inside bool) {
+	box, x, y, ok := m.topPopup()
+	if !ok {
+		return msg, false
+	}
+	local = msg
+	local.X = msg.X - x
+	local.Y = msg.Y - m.chromeTop() - y
+	inside = local.X >= 0 && local.Y >= 0 &&
+		local.X < lipgloss.Width(box) && local.Y < lipgloss.Height(box)
+	return local, inside
 }
 
 // ── Layout helpers ─────────────────────────────────────────────────────

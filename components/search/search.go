@@ -70,15 +70,20 @@ type (
 
 // Model is the search overlay model.
 type Model struct {
-	mode     SearchMode
-	input    textinput.Model
-	results  []filesystem.SearchMatch
-	cursor   int
-	offset   int
-	rootPath string
-	active   bool
-	width    int
-	height   int
+	mode    SearchMode
+	input   textinput.Model
+	results []filesystem.SearchMatch
+	cursor  int
+	offset  int
+
+	// lastClick / lastClickAt remember the last row clicked, for double
+	// clicks.
+	lastClick   int
+	lastClickAt time.Time
+	rootPath    string
+	active      bool
+	width       int
+	height      int
 
 	gen       int      // bumped on every Start
 	files     []string // paths relative to rootPath (name mode)
@@ -317,6 +322,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.move(-1)
 		case tea.MouseButtonWheelDown:
 			m.move(1)
+		case tea.MouseButtonLeft:
+			// In box coordinates the list starts on row 3, under the
+			// query line and its rule. A click picks a row, a second
+			// click on it opens it, as Enter would.
+			i := m.offset + msg.Y - 3
+			if msg.Action != tea.MouseActionPress || msg.Y < 3 || i >= min(m.offset+m.listHeight(), len(m.results)) {
+				return m, nil
+			}
+			double := i == m.lastClick && time.Since(m.lastClickAt) <= doubleClick
+			m.lastClick, m.lastClickAt = i, time.Now()
+			m.move(i - m.cursor)
+			if double {
+				m.lastClick = -1
+				return m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			}
 		}
 		return m, nil
 
@@ -391,6 +411,9 @@ func (m *Model) move(delta int) {
 	}
 	m.loadPreview()
 }
+
+// doubleClick is how close two clicks on the same row must be to open it.
+const doubleClick = 450 * time.Millisecond
 
 // ── View ───────────────────────────────────────────────────────────────
 

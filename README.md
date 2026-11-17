@@ -46,7 +46,10 @@ The mouse does what it does in a file manager. A click selects, a second one
 opens; the sidebar, the tabs, the breadcrumb segments and its back / forward
 arrows are all clickable; a click on a column title sorts by that column. The
 middle button is the browser's — it closes the tab it is on and opens the
-folder it is on in a new one — and Alt-click marks a row.
+folder it is on in a new one — and Alt-click marks a row. Popups take the
+mouse too: tab titles switch tabs, a click picks a row and a double click
+acts on it; in the git panel a click on a file's `[ ]` stages or unstages it,
+and in the settings a click on a value changes it.
 
 Files can be marked with `Space` and copied, moved or deleted in bulk. `E` opens
 the marked names in your editor for a bulk rename — search and replace across

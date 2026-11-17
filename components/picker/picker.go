@@ -11,6 +11,7 @@ package picker
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -70,8 +71,13 @@ type Model struct {
 	rows   []row
 	cursor int
 	offset int
-	width  int
-	height int
+
+	// lastClick / lastClickAt remember the last row clicked, for double
+	// clicks.
+	lastClick   int
+	lastClickAt time.Time
+	width       int
+	height      int
 }
 
 // New creates a closed picker.
@@ -157,6 +163,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.move(-1)
 		case tea.MouseButtonWheelDown:
 			m.move(1)
+		case tea.MouseButtonLeft:
+			// In box coordinates the list starts on row 3, under the
+			// query line and its rule. A click picks a row, a second
+			// click on it opens it, as Enter would.
+			i := m.offset + msg.Y - 3
+			if msg.Action != tea.MouseActionPress || msg.Y < 3 || i >= min(m.offset+m.listHeight(), len(m.rows)) {
+				return m, nil
+			}
+			double := i == m.lastClick && time.Since(m.lastClickAt) <= doubleClick
+			m.lastClick, m.lastClickAt = i, time.Now()
+			m.move(i - m.cursor)
+			if double {
+				m.lastClick = -1
+				return m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			}
 		}
 		return m, nil
 
@@ -216,6 +237,9 @@ func (m *Model) move(delta int) {
 		m.offset = m.cursor - h + 1
 	}
 }
+
+// doubleClick is how close two clicks on the same row must be to open it.
+const doubleClick = 450 * time.Millisecond
 
 // ── View ───────────────────────────────────────────────────────────────
 

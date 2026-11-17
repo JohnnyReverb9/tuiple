@@ -702,3 +702,24 @@ func TestPopupsKnowTheirSizeOutsideView(t *testing.T) {
 		t.Errorf("the search popup is %d rows tall in a %d-row area", rows, m.contentHeight())
 	}
 }
+
+// With tabs open, the strip sits right above the breadcrumb, the frame
+// still fills the window exactly, and the list starts where clicks expect.
+func TestTabStripLayout(t *testing.T) {
+	root := project(t)
+	m := newTestModel(t, root)
+	m = press(t, m, "t") // second tab
+	if !m.tabBarVisible() {
+		t.Fatal("tab strip not shown with two tabs")
+	}
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != 30 {
+		t.Fatalf("frame is %d rows, want 30", len(lines))
+	}
+	if !strings.Contains(lines[1], filepath.Base(root)) {
+		t.Fatalf("breadcrumb row = %q", lines[1])
+	}
+	if !strings.Contains(lines[m.chromeTop()+1], m.filelist.SelectedEntry().Name) {
+		t.Fatalf("row %d = %q, not the first entry", m.chromeTop()+1, lines[m.chromeTop()+1])
+	}
+}

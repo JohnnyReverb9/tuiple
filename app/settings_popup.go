@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,6 +117,11 @@ type SettingsPopup struct {
 
 	// nv is the Neovim tab's settings as last read from disk.
 	nv config.NvimSettings
+
+	// lastClick / lastClickAt remember the last row clicked, for double
+	// clicks.
+	lastClick   int
+	lastClickAt time.Time
 
 	width  int
 	height int
@@ -564,6 +570,9 @@ func handlerRow(kind, label, builtin string) settingRow {
 func (h SettingsPopup) Update(msg tea.Msg) (SettingsPopup, tea.Cmd) {
 	if !h.active {
 		return h, nil
+	}
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		return h.handleMouse(mouse)
 	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {

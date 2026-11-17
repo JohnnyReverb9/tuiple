@@ -62,6 +62,15 @@ func (m BlamePopup) Update(msg tea.Msg) (BlamePopup, tea.Cmd) {
 	if !m.active {
 		return m, nil
 	}
+	// The wheel scrolls like the arrow keys.
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		switch mouse.Button {
+		case tea.MouseButtonWheelUp:
+			msg = tea.KeyMsg{Type: tea.KeyUp}
+		case tea.MouseButtonWheelDown:
+			msg = tea.KeyMsg{Type: tea.KeyDown}
+		}
+	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -71,6 +80,10 @@ func (m BlamePopup) Update(msg tea.Msg) (BlamePopup, tea.Cmd) {
 		// Esc only — q is reserved for quitting tuiple, matching the
 		// branches-popup convention.
 		m.Stop()
+	case "up", "k":
+		m.offset = clampOffset(m.offset-1, len(m.lines))
+	case "down", "j":
+		m.offset = clampOffset(m.offset+1, len(m.lines))
 	case "ctrl+d", "pgdown":
 		m.offset = clampOffset(m.offset+scrollStep, len(m.lines))
 	case "ctrl+u", "pgup":

@@ -16,6 +16,9 @@ var (
 	// still findable, no longer claiming attention.
 	BgHighlight = lipgloss.AdaptiveColor{Light: "#eef2f7", Dark: "#2a2e48"}
 	BgSelected  = lipgloss.AdaptiveColor{Light: "#dbeafe", Dark: "#2d3f76"}
+	// TabBarBg is the band behind the tab strip: a step off the terminal
+	// background, quieter than BgSelected on the active tab.
+	TabBarBg = lipgloss.AdaptiveColor{Light: "#e9ecf1", Dark: "#1b1d2b"}
 
 	// FgColor      = lipgloss.AdaptiveColor{Light: "#0f172a", Dark: "#c0caf5"}
 	FgColor      = lipgloss.AdaptiveColor{Light: "#0f172a", Dark: "#c8d3f5"}

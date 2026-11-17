@@ -43,6 +43,8 @@ type Model struct {
 	log    logTab
 	stash  stashTab
 
+	clicks clicks // the last mouse press, for double clicks
+
 	width  int
 	height int
 }
@@ -116,6 +118,9 @@ func (m *Model) Stop() { m.active = false }
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if !m.active {
 		return m, nil
+	}
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		return m.handleMouse(mouse)
 	}
 
 	if m.loadErr == nil {

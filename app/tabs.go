@@ -296,23 +296,25 @@ func (m Model) tabAt(x int) (int, bool) {
 	return 0, false
 }
 
-// renderTabBar draws the strip: the active tab on the cursor colour, the
-// rest dim. Numbers come first because they are how you reach a tab —
-// press the number.
+// renderTabBar draws the strip: a band across the window, the active tab
+// on the cursor colour, the rest dim. The band sets the tabs apart from
+// the path below without spending a blank row on it. Numbers come first
+// because they are how you reach a tab — press the number.
 func (m Model) renderTabBar() string {
 	cells, moreLeft, moreRight := m.tabLayout()
+	band := lipgloss.NewStyle().Background(theme.TabBarBg)
 
 	var b strings.Builder
 	col := 0
 	advance := func(to int) {
 		if to > col {
-			b.WriteString(strings.Repeat(" ", to-col))
+			b.WriteString(band.Render(strings.Repeat(" ", to-col)))
 			col = to
 		}
 	}
 	if moreLeft {
 		advance(1)
-		b.WriteString(theme.Muted.Render("‹"))
+		b.WriteString(theme.Muted.Inherit(band).Render("‹"))
 		col++
 	}
 	for _, c := range cells {
@@ -326,16 +328,16 @@ func (m Model) renderTabBar() string {
 			b.WriteString(bg.Render(" "))
 			b.WriteString(bg.Foreground(theme.FgColor).Bold(true).Render(name))
 		} else {
-			b.WriteString(" ")
-			b.WriteString(theme.Muted.Render(num))
-			b.WriteString(" ")
-			b.WriteString(theme.Dim.Render(name))
+			b.WriteString(band.Render(" "))
+			b.WriteString(theme.Muted.Inherit(band).Render(num))
+			b.WriteString(band.Render(" "))
+			b.WriteString(theme.Dim.Inherit(band).Render(name))
 		}
 		col = c.x1
 	}
 	if moreRight {
 		advance(col + 1)
-		b.WriteString(theme.Muted.Render("›"))
+		b.WriteString(theme.Muted.Inherit(band).Render("›"))
 		col++
 	}
 	advance(m.width)
